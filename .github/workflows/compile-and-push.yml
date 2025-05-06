@@ -1,0 +1,48 @@
+name: 🛠️ 自动编译Sing-box的private规则集
+
+on:
+  push:
+    paths:
+      - 'private/geoip/private.json'
+      - 'private/geosite/private.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 检出代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. 安装 sing-box CLI
+      - name: Install sing-box
+        run: |
+          curl -fsSL https://sing-box.app/install.sh | sh
+
+      # 3. 编译 IP 规则集
+      - name: Compile IP rule-set
+        run: |
+          sing-box rule-set compile \
+            --output private/geoip/private.srs \
+            private/geoip/private.json
+
+      # 4. 编译域名（geosite）规则集
+      - name: Compile geo-site rule-set
+        run: |
+          sing-box rule-set compile \
+            --output private/geosite/private.srs \
+            private/geosite/private.json
+
+      # 5. 提交并推送编译结果
+      - name: Commit and push compiled rules
+        uses: EndBug/add-and-commit@v9
+        with:
+          add: |
+            private/geoip/private.srs
+            private/geosite/private.srs
+          message: "编辑更新最新private规则集"
