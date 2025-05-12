@@ -11,7 +11,7 @@ https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singb
 tun通用模式：  
 https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun.json
 
-tun-home个人home专属设置： 
+tun-home个人home专属设置：  
 https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_home.json
 
 tun-lmy朋友专属优化设置：  
@@ -24,7 +24,7 @@ tun测试版（非正式不要乱用）：
 https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_ceshi.json
 
 ### singbox测试版(1.12.X)：  
-tun适应开发板紧随版本更新，尝鲜专用： 
+tun适应开发板紧随版本更新，尝鲜专用：  
 https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.12.X/config_tun_1.12.json
 
 ### mihomo所有支持mihomo内核客户端版本通用：  
