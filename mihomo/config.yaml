@@ -170,7 +170,6 @@ proxy-groups:
 # AND为QUIC协议屏蔽
 rules:
   - AND,((DST-PORT,443),(NETWORK,udp)),REJECT-DROP
-  - DOMAIN-SUFFIX,qichiyu.com,🚀 默认代理
   - RULE-SET,myruls,🚀 默认代理
   - RULE-SET,private_domain,直连
   - RULE-SET,apple_domain,🍎 Apple
