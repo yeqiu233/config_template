@@ -1,0 +1,73 @@
+name: 🛠️ 自动编译mihomo的私人规则集
+
+on:
+  push:
+    paths:
+      - 'rules/mihomo/**/*.yaml'
+  workflow_dispatch:
+
+jobs:
+  convert-rules:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get latest mihomo version
+        id: get-version
+        shell: pwsh
+        run: |
+          $url = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+          $response = Invoke-RestMethod -Uri $url
+          $latest_version = $response.tag_name
+          echo "version=$latest_version" >> $env:GITHUB_OUTPUT
+
+      - name: Cache mihomo
+        id: cache-mihomo
+        uses: actions/cache@v3
+        with:
+          path: mihomo.exe
+          key: mihomo-${{ steps.get-version.outputs.version }}
+
+      - name: Download mihomo (if needed)
+        if: steps.cache-mihomo.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.get-version.outputs.version }}"
+          $url = "https://github.com/MetaCubeX/mihomo/releases/download/$version/mihomo-windows-amd64-compatible-$version.zip"
+          
+          # 下载并解压到根目录
+          Invoke-WebRequest $url -OutFile mihomo.zip
+          Expand-Archive -Path mihomo.zip -DestinationPath . -Force
+          
+          # 重命名可执行文件
+          Get-ChildItem -Filter "mihomo*.exe" | Rename-Item -NewName "mihomo.exe"
+
+      - name: Convert Files (Recursive)
+        shell: pwsh
+        run: |
+          # 递归转换所有 YAML 文件
+          $yamls = Get-ChildItem -Path "rules/mihomo" -Recurse -Filter *.yaml
+          
+          foreach ($yaml in $yamls) {
+            $mrsPath = Join-Path $yaml.Directory.FullName ($yaml.BaseName + ".mrs")
+            Write-Host "Converting [$($yaml.FullName)] → [$mrsPath]"
+            ./mihomo.exe convert-ruleset domain yaml $yaml.FullName $mrsPath
+          }
+
+      - name: Auto Commit
+        shell: pwsh
+        run: |
+          cd $env:GITHUB_WORKSPACE
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
+          
+          git add "rules/mihomo/**/*.mrs"
+          
+          if (git diff --cached --quiet) {
+            Write-Host "No changes to commit"
+          } else {
+            git commit -m "更新最新私人mihomo规则集"
+            git push
+          }

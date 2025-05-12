@@ -1,0 +1,56 @@
+name: 🛠️ 自动编译Singbox的私人规则集
+
+on:
+  push:
+    paths:
+      - 'rules/singbox/**/*.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 检出代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. 安装 sing-box CLI
+      - name: Install sing-box
+        run: |
+          curl -fsSL https://sing-box.app/install.sh | sh
+
+      # 3. 查找所有 .json 文件并编译
+      - name: Compile rule-sets
+        run: |
+          # 查找所有 .json 文件并编译对应的规则集
+          find rules/singbox/ -type f -name "*.json" | while read json_file; do
+            # 获取文件的目录和文件名（不带扩展名）
+            base_name=$(basename "$json_file" .json)
+            output_file="${json_file%.json}.srs"
+            # 编译规则集
+            echo "编译规则集: $json_file"
+            sing-box rule-set compile --output "$output_file" "$json_file"
+          done
+
+      # 4. 提交并推送编译结果
+      - name: Commit and push compiled rules
+        run: |
+          # 配置 Git 用户信息
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          # 确保仓库是最新的
+          git pull origin main
+
+          # 添加所有 .srs 文件
+          git add 'rules/singbox/**/*.srs'
+
+          # 提交更改
+          git commit -m "更新最新私人singbox规则集" || echo "No changes to commit"
+
+          # 推送到远程仓库
+          git push origin main
