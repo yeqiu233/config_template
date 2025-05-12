@@ -171,9 +171,9 @@ proxy-groups:
 rules:
   - AND,((DST-PORT,443),(NETWORK,udp)),REJECT-DROP
   - DOMAIN-SUFFIX,qichiyu.com,🚀 默认代理
+  - RULE-SET,myruls,🚀 默认代理
   - RULE-SET,private_domain,直连
   - RULE-SET,apple_domain,🍎 Apple
-  - RULE-SET,proxylite,🚀 默认代理
   - RULE-SET,ai,🤖 ChatGPT
   - RULE-SET,github_domain,👨🏿‍💻 GitHub
   - RULE-SET,youtube_domain,📹 YouTube
@@ -199,8 +199,8 @@ rule-anchor:
   domain: &domain {type: http, interval: 86400, behavior: domain, format: mrs}
   class: &class {type: http, interval: 86400, behavior: classical, format: text}
 rule-providers: 
+  myruls: { <<: *class, url: "https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/rules/mihomo/geosite/myruls.mrs"}
   private_domain: { <<: *domain, url: "https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/private.mrs"}
-  proxylite: { <<: *class, url: "https://gh-proxy.com/https://raw.githubusercontent.com/qichiyuhub/rule/refs/heads/master/ProxyLite.list"}
   ai: {  <<: *domain, url: "https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.mrs" }
   youtube_domain: { <<: *domain, url: "https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/youtube.mrs"}
   google_domain: { <<: *domain, url: "https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/google.mrs"}
