@@ -5,29 +5,28 @@
 ## 适配配置文件：
 
 ### singbox稳定版(1.11.X)：  
-tproxy：
-https://agitgub.my.155966.xyz/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tproxy.json
+tproxy通用模式：
+https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tproxy.json
 
-tun：
-https://agitgub.my.155966.xyz/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun.json
+tun通用模式：
+https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun.json
 
-tun-home：
-https://agitgub.my.155966.xyz/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_home.json
+tun-home个人home专属设置：
+https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_home.json
 
-tun-lmy：
-https://agitgub.my.155966.xyz/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_lmy.json
+tun-lmy朋友专属优化设置：
+https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_lmy.json
 
-tun-dianxin这是电信专属解决屏蔽联通IP的问题：
-https://agitgub.my.155966.xyz/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_lmy.json
+tun-dianxin这是电信网络专属解决屏蔽联通IP的问题：
+https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_lmy.json
 
-tun测试：
-https://agitgub.my.155966.xyz/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_ceshi.json
+tun测试版（非正式不要乱用）：
+https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_ceshi.json
 
 ### singbox测试版(1.12.X)：  
-tun：
-https://agitgub.my.155966.xyz/https://github.com/yeqiu233/config_template/blob/main/singbox/1.12.X/config_tun_1.12.json
+tun适应开发板紧随版本更新，尝鲜专用：
+https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.12.X/config_tun_1.12.json
 
-### mihomo所有客户端版本通用：  
+### mihomo所有支持mihomo内核客户端版本通用：  
 
-https://agitgub.my.155966.xyz/https://github.com/yeqiu233/config_template/blob/main/mihomo/config.yaml
-
+https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/mihomo/config.yaml
