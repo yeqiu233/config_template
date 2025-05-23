@@ -34,11 +34,11 @@
        {"tag":"dns_direct", "type":"https", "server":"223.5.5.5", "domain_resolver":"dns_direct-resolver", "detour":"🎯 全球直连"},
        {"tag":"dns_direct-resolver", "type":"udp","server":"223.5.5.5","detour":"🎯 全球直连"},
        {"tag":"dns_proxy", "type":"https", "server":"dns.google", "domain_resolver":"dns_proxy-resolver", "detour":"🚀 节点选择"},
-       {"tag":"dns_proxy-resolver", "type":"udp", "server":"8.8.8.8", "detour":"🚀 节点选择"}
+       {"tag":"dns_proxy-resolver", "type":"udp", "server":"8.8.8.8", "detour":"🚀 节点选择"},
+       {"tag": "fakeip", "type": "fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18" }
      ],
      "rules": 
      [
-       {"action":"route", "server":"dns_direct-resolver", "outbound":"any"},
        {"action":"route", "clash_mode":"direct", "server":"dns_direct"},
        {"action":"route", "clash_mode":"global", "server":"dns_proxy"},
        {"action":"route", "rule_set":["geosite-cn"], "server":"dns_direct"},
