@@ -1,0 +1,441 @@
+#!/bin/bash
+
+# 配置文件路径
+INTERFACES_FILE="/etc/network/interfaces"
+CONFIG_FILE="/etc/nat_config"
+CONFIG_BLOCK="vmbr0"
+
+# 默认网络接口
+DEFAULT_IFACE="enp0s6"
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # 无颜色
+
+# 加载配置
+load_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE"
+    else
+        # 初始化配置
+        EXTERNAL_IF="$DEFAULT_IFACE"
+        save_config
+    fi
+}
+
+# 保存配置
+save_config() {
+    echo "EXTERNAL_IF='$EXTERNAL_IF'" > "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
+}
+
+# 检查root权限
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}错误：此脚本需要root权限${NC}"
+        exit 1
+    fi
+}
+
+# 显示当前所有映射规则（单行格式）
+list_rules() {
+    echo -e "${YELLOW}\n当前端口映射规则：${NC}"
+    echo -e "${BLUE}===========================================================================================================${NC}"
+    echo -e "${GREEN}目标设备\t协议\t类型\t\t宿主机端口\t映射到目标端口${NC}"
+    echo -e "${BLUE}-----------------------------------------------------------------------------------------------------------${NC}"
+    
+    # 获取所有规则
+    iptables-save -t nat | grep -E "PREROUTING.*DNAT" | while read -r rule; do
+        # 提取目标IP
+        target_ip=$(echo "$rule" | grep -oP " --to-destination \K[^:]+")
+        
+        # 提取协议
+        protocol=$(echo "$rule" | grep -oP " -p \K\w+")
+        [ -z "$protocol" ] && protocol="tcp/udp"  # 默认值
+        
+        # 提取端口信息
+        ports=$(echo "$rule" | grep -oP "(--dport |multiport --dports )\K[\w\-,:]+")
+        
+        # 确定端口类型
+        if [[ "$ports" == *","* ]]; then
+            port_type="离散端口"
+        elif [[ "$ports" == *"-"* ]]; then
+            port_type="端口范围"
+        else
+            port_type="单端口"
+        fi
+        
+        # 提取映射的内部端口
+        dest_port=$(echo "$rule" | grep -oP " --to-destination $target_ip:\K[\w\-,:]+")
+        
+        # 如果目标端口未指定，则与源端口相同
+        [ -z "$dest_port" ] && dest_port="$ports"
+        
+        # 单行输出
+        echo -e "$target_ip\t$protocol\t$port_type\t\t$ports\t$dest_port"
+    done
+    
+    echo -e "${BLUE}===========================================================================================================${NC}"
+    echo -e "${GREEN}规则总数: $(iptables-save -t nat | grep "DNAT --to-destination" | wc -l)${NC}"
+}
+
+# 检查端口是否已被使用
+check_port_used() {
+    local port=$1
+    local protocol=$2
+    
+    # 检查TCP端口
+    if [ "$protocol" == "tcp" ] || [ "$protocol" == "both" ]; then
+        if ss -tuln | grep -q ":$port\b"; then
+            return 1
+        fi
+    fi
+    
+    # 检查UDP端口
+    if [ "$protocol" == "udp" ] || [ "$protocol" == "both" ]; then
+        if ss -uln | grep -q ":$port\b"; then
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
+# 检查端口范围是否可用
+check_port_range() {
+    local start=$1
+    local end=$2
+    local protocol=$3
+    
+    for port in $(seq "$start" "$end"); do
+        check_port_used "$port" "$protocol"
+        if [ $? -ne 0 ]; then
+            echo "$port"
+            return 1
+        fi
+    done
+    
+    return 0
+}
+
+# 添加单端口规则
+add_single_port() {
+    echo -e "${YELLOW}\n添加单端口映射规则${NC}"
+    
+    # 获取输入
+    read -p "输入宿主机端口: " host_port
+    read -p "协议 (tcp/udp/both): " protocol
+    read -p "输入目标设备IP: " target_ip
+    read -p "输入目标设备端口: " target_port
+    
+    # 验证输入
+    if ! [[ "$host_port" =~ ^[0-9]+$ ]] || ! [[ "$target_port" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}错误：端口必须是数字${NC}"
+        return
+    fi
+    
+    if [ "$host_port" -lt 1 ] || [ "$host_port" -gt 65535 ]; then
+        echo -e "${RED}错误：宿主机端口必须在1-65535范围内${NC}"
+        return
+    fi
+    
+    if [ "$target_port" -lt 1 ] || [ "$target_port" -gt 65535 ]; then
+        echo -e "${RED}错误：目标端口必须在1-65535范围内${NC}"
+        return
+    fi
+    
+    # 检查端口是否可用
+    if [ "$protocol" == "both" ]; then
+        check_port_used "$host_port" "tcp"
+        tcp_used=$?
+        check_port_used "$host_port" "udp"
+        udp_used=$?
+        
+        if [ $tcp_used -ne 0 ] || [ $udp_used -ne 0 ]; then
+            echo -e "${RED}错误：宿主机端口 $host_port 已被使用${NC}"
+            return
+        fi
+    else
+        check_port_used "$host_port" "$protocol"
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}错误：宿主机端口 $host_port 已被使用${NC}"
+            return
+        fi
+    fi
+    
+    # 显示规则预览
+    echo -e "${GREEN}\n规则预览：${NC}"
+    if [ "$protocol" == "tcp" ] || [ "$protocol" == "both" ]; then
+        echo "iptables -t nat -A PREROUTING -i $EXTERNAL_IF -p tcp --dport $host_port -j DNAT --to-destination $target_ip:$target_port"
+        echo "iptables -A FORWARD -i $EXTERNAL_IF -d $target_ip -p tcp --dport $target_port -j ACCEPT"
+    fi
+    
+    if [ "$protocol" == "udp" ] || [ "$protocol" == "both" ]; then
+        echo "iptables -t nat -A PREROUTING -i $EXTERNAL_IF -p udp --dport $host_port -j DNAT --to-destination $target_ip:$target_port"
+        echo "iptables -A FORWARD -i $EXTERNAL_IF -d $target_ip -p udp --dport $target_port -j ACCEPT"
+    fi
+    
+    # 确认添加
+    read -p "是否添加此规则? (y/n): " confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo -e "${YELLOW}已取消添加规则${NC}"
+        return
+    fi
+    
+    # 添加规则到配置文件
+    if [ "$protocol" == "tcp" ] || [ "$protocol" == "both" ]; then
+        echo -e "\n# TCP单端口映射: $host_port -> $target_ip:$target_port" >> "$INTERFACES_FILE"
+        echo "    post-up iptables -t nat -A PREROUTING -i $EXTERNAL_IF -p tcp --dport $host_port -j DNAT --to-destination $target_ip:$target_port" >> "$INTERFACES_FILE"
+        echo "    post-up iptables -A FORWARD -i $EXTERNAL_IF -d $target_ip -p tcp --dport $target_port -j ACCEPT" >> "$INTERFACES_FILE"
+    fi
+    
+    if [ "$protocol" == "udp" ] || [ "$protocol" == "both" ]; then
+        echo -e "\n# UDP单端口映射: $host_port -> $target_ip:$target_port" >> "$INTERFACES_FILE"
+        echo "    post-up iptables -t nat -A PREROUTING -i $EXTERNAL_IF -p udp --dport $host_port -j DNAT --to-destination $target_ip:$target_port" >> "$INTERFACES_FILE"
+        echo "    post-up iptables -A FORWARD -i $EXTERNAL_IF -d $target_ip -p udp --dport $target_port -j ACCEPT" >> "$INTERFACES_FILE"
+    fi
+    
+    # 立即应用规则
+    if [ "$protocol" == "tcp" ] || [ "$protocol" == "both" ]; then
+        iptables -t nat -A PREROUTING -i $EXTERNAL_IF -p tcp --dport $host_port -j DNAT --to-destination $target_ip:$target_port
+        iptables -A FORWARD -i $EXTERNAL_IF -d $target_ip -p tcp --dport $target_port -j ACCEPT
+    fi
+    
+    if [ "$protocol" == "udp" ] || [ "$protocol" == "both" ]; then
+        iptables -t nat -A PREROUTING -i $EXTERNAL_IF -p udp --dport $host_port -j DNAT --to-destination $target_ip:$target_port
+        iptables -A FORWARD -i $EXTERNAL_IF -d $target_ip -p udp --dport $target_port -j ACCEPT
+    fi
+    
+    echo -e "${GREEN}\n规则已添加并生效！${NC}"
+}
+
+# 添加端口范围规则
+add_port_range() {
+    echo -e "${YELLOW}\n添加端口范围映射规则${NC}"
+    
+    # 获取输入
+    read -p "输入宿主机起始端口: " host_start
+    read -p "输入宿主机结束端口: " host_end
+    read -p "协议 (tcp/udp/both): " protocol
+    read -p "输入目标设备IP: " target_ip
+    read -p "输入目标设备起始端口: " target_start
+    read -p "输入目标设备结束端口: " target_end
+    
+    # 验证输入
+    if ! [[ "$host_start" =~ ^[0-9]+$ ]] || ! [[ "$host_end" =~ ^[0-9]+$ ]] || \
+       ! [[ "$target_start" =~ ^[0-9]+$ ]] || ! [[ "$target_end" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}错误：端口必须是数字${NC}"
+        return
+    fi
+    
+    # 检查端口范围是否一致
+    host_range=$((host_end - host_start))
+    target_range=$((target_end - target_start))
+    
+    if [ "$host_range" -ne "$target_range" ]; then
+        echo -e "${RED}错误：宿主机端口范围($host_start-$host_end)和目标端口范围($target_start-$target_end)大小不一致${NC}"
+        return
+    fi
+    
+    # 检查端口范围是否可用
+    if [ "$protocol" == "both" ]; then
+        used_port=$(check_port_range "$host_start" "$host_end" "tcp")
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}错误：TCP端口 $used_port 已被使用${NC}"
+            return
+        fi
+        
+        used_port=$(check_port_range "$host_start" "$host_end" "udp")
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}错误：UDP端口 $used_port 已被使用${NC}"
+            return
+        fi
+    else
+        used_port=$(check_port_range "$host_start" "$host_end" "$protocol")
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}错误：$protocol 端口 $used_port 已被使用${NC}"
+            return
+        fi
+    fi
+    
+    # 显示规则预览
+    echo -e "${GREEN}\n规则预览：${NC}"
+    if [ "$protocol" == "tcp" ] || [ "$protocol" == "both" ]; then
+        echo "iptables -t nat -A PREROUTING -i $EXTERNAL_IF -p tcp --dport $host_start:$host_end -j DNAT --to-destination $target_ip:$target_start-$target_end"
+        echo "iptables -A FORWARD -i $EXTERNAL_IF -d $target_ip -p tcp --dport $target_start:$target_end -j ACCEPT"
+    fi
+    
+    if [ "$protocol" == "udp" ] || [ "$protocol" == "both" ]; then
+        echo "iptables -t nat -A PREROUTING -i $EXTERNAL_IF -p udp --dport $host_start:$host_end -j DNAT --to-destination $target_ip:$target_start-$target_end"
+        echo "iptables -A FORWARD -i $EXTERNAL_IF -d $target_ip -p udp --dport $target_start:$target_end -j ACCEPT"
+    fi
+    
+    # 确认添加
+    read -p "是否添加此规则? (y/n): " confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo -e "${YELLOW}已取消添加规则${NC}"
+        return
+    fi
+    
+    # 添加规则到配置文件
+    if [ "$protocol" == "tcp" ] || [ "$protocol" == "both" ]; then
+        echo -e "\n# TCP端口范围映射: $host_start-$host_end -> $target_ip:$target_start-$target_end" >> "$INTERFACES_FILE"
+        echo "    post-up iptables -t nat -A PREROUTING -i $EXTERNAL_IF -p tcp --dport $host_start:$host_end -j DNAT --to-destination $target_ip:$target_start-$target_end" >> "$INTERFACES_FILE"
+        echo "    post-up iptables -A FORWARD -i $EXTERNAL_IF -d $target_ip -p tcp --dport $target_start:$target_end -j ACCEPT" >> "$INTERFACES_FILE"
+    fi
+    
+    if [ "$protocol" == "udp" ] || [ "$protocol" == "both" ]; then
+        echo -e "\n# UDP端口范围映射: $host_start-$host_end -> $target_ip:$target_start-$target_end" >> "$INTERFACES_FILE"
+        echo "    post-up iptables -t nat -A PREROUTING -i $EXTERNAL_IF -p udp --dport $host_start:$host_end -j DNAT --to-destination $target_ip:$target_start-$target_end" >> "$INTERFACES_FILE"
+        echo "    post-up iptables -A FORWARD -i $EXTERNAL_IF -d $target_ip -p udp --dport $target_start:$target_end -j ACCEPT" >> "$INTERFACES_FILE"
+    fi
+    
+    # 立即应用规则
+    if [ "$protocol" == "tcp" ] || [ "$protocol" == "both" ]; then
+        iptables -t nat -A PREROUTING -i $EXTERNAL_IF -p tcp --dport $host_start:$host_end -j DNAT --to-destination $target_ip:$target_start-$target_end
+        iptables -A FORWARD -i $EXTERNAL_IF -d $target_ip -p tcp --dport $target_start:$target_end -j ACCEPT
+    fi
+    
+    if [ "$protocol" == "udp" ] || [ "$protocol" == "both" ]; then
+        iptables -t nat -A PREROUTING -i $EXTERNAL_IF -p udp --dport $host_start:$host_end -j DNAT --to-destination $target_ip:$target_start-$target_end
+        iptables -A FORWARD -i $EXTERNAL_IF -d $target_ip -p udp --dport $target_start:$target_end -j ACCEPT
+    fi
+    
+    echo -e "${GREEN}\n规则已添加并生效！${NC}"
+}
+
+# 设置网络接口
+set_network_interface() {
+    echo -e "${YELLOW}\n当前网络接口配置：${NC}"
+    echo -e "外部网络接口: $EXTERNAL_IF"
+    
+    # 获取系统可用接口
+    available_ifaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -v lo)
+    
+    echo -e "\n${YELLOW}系统可用网络接口：${NC}"
+    echo "$available_ifaces"
+    
+    read -p "是否要更改外部网络接口? (y/n): " change_confirm
+    if [ "$change_confirm" != "y" ] && [ "$change_confirm" != "Y" ]; then
+        echo -e "${YELLOW}已取消更改${NC}"
+        return
+    fi
+    
+    while true; do
+        read -p "输入新的外部网络接口: " new_iface
+        
+        # 验证接口是否存在
+        if ! echo "$available_ifaces" | grep -wq "$new_iface"; then
+            echo -e "${RED}错误：接口 $new_iface 不存在${NC}"
+            echo -e "${YELLOW}请选择以下可用接口：${NC}"
+            echo "$available_ifaces"
+            continue
+        fi
+        
+        # 验证接口是否已启用
+        if ! ip link show "$new_iface" | grep -q "state UP"; then
+            echo -e "${YELLOW}警告：接口 $new_iface 未启用${NC}"
+            read -p "是否继续使用此接口? (y/n): " use_down
+            if [ "$use_down" != "y" ] && [ "$use_down" != "Y" ]; then
+                continue
+            fi
+        fi
+        
+        # 验证接口是否有IP地址
+        if ! ip addr show "$new_iface" | grep -q "inet "; then
+            echo -e "${YELLOW}警告：接口 $new_iface 没有分配IP地址${NC}"
+            read -p "是否继续使用此接口? (y/n): " use_noip
+            if [ "$use_noip" != "y" ] && [ "$use_noip" != "Y" ]; then
+                continue
+            fi
+        fi
+        
+        # 确认更改
+        read -p "确认更改外部网络接口为 $new_iface? (y/n): " confirm
+        if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+            EXTERNAL_IF="$new_iface"
+            save_config
+            echo -e "${GREEN}外部网络接口已更新为 $new_iface${NC}"
+            
+            # 更新现有规则？
+            read -p "是否要更新现有规则使用新接口? (y/n): " update_rules
+            if [ "$update_rules" = "y" ] || [ "$update_rules" = "Y" ]; then
+                update_interface_in_rules
+            fi
+            
+            return
+        else
+            echo -e "${YELLOW}已取消更改${NC}"
+            return
+        fi
+    done
+}
+
+# 更新现有规则使用新接口
+update_interface_in_rules() {
+    echo -e "${YELLOW}更新现有规则使用新接口 $EXTERNAL_IF${NC}"
+    
+    # 临时保存规则
+    iptables-save > /tmp/iptables_rules
+    
+    # 替换接口名称
+    sed -i "s/-i [^ ]*/-i $EXTERNAL_IF/g" /tmp/iptables_rules
+    
+    # 恢复规则
+    iptables-restore < /tmp/iptables_rules
+    rm -f /tmp/iptables_rules
+    
+    # 更新配置文件
+    sed -i "s/-i [^ ]*/-i $EXTERNAL_IF/g" "$INTERFACES_FILE"
+    
+    echo -e "${GREEN}所有规则已更新使用新接口 $EXTERNAL_IF${NC}"
+}
+
+# 主菜单
+main_menu() {
+    while true; do
+        echo -e "\n${YELLOW}端口映射管理工具${NC}"
+        echo -e "${BLUE}==============================${NC}"
+        echo "1. 查看当前规则"
+        echo "2. 添加单端口规则"
+        echo "3. 添加端口范围规则"
+        echo "4. 设置网络接口"
+        echo "5. 退出"
+        echo -e "${BLUE}==============================${NC}"
+        echo -e "${YELLOW}当前外部接口: $EXTERNAL_IF${NC}"
+        
+        read -p "请选择操作 [1-5]: " choice
+        
+        case $choice in
+            1)
+                list_rules
+                ;;
+            2)
+                add_single_port
+                ;;
+            3)
+                add_port_range
+                ;;
+            4)
+                set_network_interface
+                ;;
+            5)
+                echo -e "${GREEN}已退出${NC}"
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}无效选择，请重新输入${NC}"
+                ;;
+        esac
+        
+        read -p "按回车键继续..."
+    done
+}
+
+# 脚本入口
+check_root
+load_config
+main_menu
