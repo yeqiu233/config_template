@@ -320,17 +320,13 @@ set_network_interface() {
     done
 }
 
-# 删除规则
-delete_rule() {
-    echo -e "${YELLOW}\n删除端口映射规则${NC}"
-    list_rules
-    
-    read -p "输入要删除的规则ID: " rule_id
-    [[ "$rule_id" =~ ^[0-9]+$ ]] || { echo -e "${RED}错误：无效的规则ID${NC}"; return; }
+# 删除单个规则
+delete_single_rule() {
+    local rule_id=$1
     
     # 获取规则信息
     local rule_info=$(iptables-save -t nat | grep -E "PREROUTING.*DNAT" | sed -n "${rule_id}p")
-    [ -z "$rule_info" ] && { echo -e "${RED}错误：找不到规则ID $rule_id${NC}"; return; }
+    [ -z "$rule_info" ] && { echo -e "${RED}错误：找不到规则ID $rule_id${NC}"; return 1; }
     
     # 提取规则参数
     local target_ip=$(echo "$rule_info" | grep -oP " --to-destination \K[^:]+")
@@ -341,30 +337,25 @@ delete_rule() {
     local dest_port=$(echo "$rule_info" | grep -oP " --to-destination $target_ip:\K[\w\-,:]+")
     [ -z "$dest_port" ] && dest_port="$ports"
     
-    # 确认删除
-    echo -e "${YELLOW}\n要删除的规则：${NC}"
+    # 确定规则类型
+    local rule_type
+    if [[ "$ports" == *","* ]]; then
+        rule_type="离散端口"
+    elif [[ "$ports" == *"-"* ]]; then
+        rule_type="端口范围"
+    else
+        rule_type="单端口"
+    fi
+    
+    # 显示规则详情
+    echo -e "${YELLOW}规则ID: $rule_id${NC}"
     echo "目标设备: $target_ip"
     echo "协议: $protocol"
+    echo "类型: $rule_type"
     echo "宿主机端口: $ports"
     echo "目标端口: $dest_port"
     
-    read -p "确认删除此规则? (y/n): " confirm
-    [[ "$confirm" =~ ^[Yy]$ ]] || { echo -e "${YELLOW}已取消删除${NC}"; return; }
-    
-    # 删除规则文件中的条目
-    local desc_pattern=""
-    if [[ "$ports" == *","* ]]; then
-        desc_pattern="离散端口"
-    elif [[ "$ports" == *"-"* ]]; then
-        desc_pattern="端口范围"
-    else
-        desc_pattern="单端口"
-    fi
-    
-    # 从规则文件中删除
-    sed -i "/$target_ip.*$ports/,+4d" "$RULES_FILE"
-    
-    # 从iptables中删除
+    # 删除iptables规则
     if [[ "$protocol" == "tcp" || "$protocol" == "tcp/udp" ]]; then
         iptables -t nat -D PREROUTING -i $EXTERNAL_IF -p tcp --dport $ports -j DNAT --to-destination $target_ip:$dest_port
         iptables -D FORWARD -i $EXTERNAL_IF -d $target_ip -p tcp --dport $dest_port -j ACCEPT
@@ -375,7 +366,60 @@ delete_rule() {
         iptables -D FORWARD -i $EXTERNAL_IF -d $target_ip -p udp --dport $dest_port -j ACCEPT
     fi
     
-    echo -e "${GREEN}规则已成功删除${NC}"
+    # 从规则文件中删除
+    local pattern="#.*$ports.*$target_ip"
+    if grep -q "$pattern" "$RULES_FILE"; then
+        sed -i "/$pattern/,/^$/d" "$RULES_FILE"
+    fi
+    
+    echo -e "${GREEN}规则 $rule_id 已成功删除${NC}"
+    return 0
+}
+
+# 删除规则（支持批量删除）
+delete_rules() {
+    echo -e "${YELLOW}\n删除端口映射规则${NC}"
+    list_rules
+    
+    read -p "输入要删除的规则ID（多个ID用空格分隔）: " rule_ids
+    [ -z "$rule_ids" ] && { echo -e "${YELLOW}已取消删除${NC}"; return; }
+    
+    # 验证输入并排序（从大到小）
+    local valid_ids=()
+    for id in $rule_ids; do
+        if [[ "$id" =~ ^[0-9]+$ ]]; then
+            valid_ids+=("$id")
+        else
+            echo -e "${RED}错误：'$id' 不是有效的规则ID${NC}"
+        fi
+    done
+    
+    # 倒序排序以便正确删除
+    IFS=$'\n' sorted_ids=($(sort -rn <<< "${valid_ids[*]}"))
+    unset IFS
+    
+    # 显示选中的规则
+    echo -e "\n${YELLOW}选中的规则ID: ${sorted_ids[*]}${NC}"
+    
+    # 确认删除
+    read -p "确认删除以上规则? (y/n): " confirm
+    [[ "$confirm" =~ ^[Yy]$ ]] || { echo -e "${YELLOW}已取消删除${NC}"; return; }
+    
+    # 批量删除
+    local success_count=0
+    local fail_count=0
+    
+    for id in "${sorted_ids[@]}"; do
+        if delete_single_rule "$id"; then
+            ((success_count++))
+        else
+            ((fail_count++))
+        fi
+    done
+    
+    echo -e "\n${GREEN}删除完成！${NC}"
+    echo -e "成功删除: ${GREEN}$success_count${NC} 条规则"
+    [ $fail_count -gt 0 ] && echo -e "失败删除: ${RED}$fail_count${NC} 条规则"
 }
 
 # 主菜单
@@ -386,7 +430,7 @@ main_menu() {
         echo "1. 查看当前规则"
         echo "2. 添加单端口规则"
         echo "3. 添加端口范围规则"
-        echo "4. 删除规则"
+        echo "4. 删除规则（支持批量）"
         echo "5. 设置网络接口"
         echo "6. 退出"
         echo -e "${BLUE}==============================${NC}"
@@ -398,7 +442,7 @@ main_menu() {
             1) list_rules ;;
             2) add_single_port ;;
             3) add_port_range ;;
-            4) delete_rule ;;
+            4) delete_rules ;;
             5) set_network_interface ;;
             6) echo -e "${GREEN}已退出${NC}"; exit 0 ;;
             *) echo -e "${RED}无效选择，请重新输入${NC}" ;;
