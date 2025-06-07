@@ -65,17 +65,8 @@
     "auto_route": true,
     "auto_redirect": true,
     "strict_route": true,
-    "route_exclude_address": [
-      "100.64.0.0/10",
-      "127.0.0.0/8",
-      "192.168.2.0/24",
-      "192.168.200.0/24"
-    ],
     "endpoint_independent_nat": false,
     "stack": "mixed",
-    "exclude_interface": [
-      "tailscale0"
-    ]
   },
   {
     "tag": "mixed-in",
