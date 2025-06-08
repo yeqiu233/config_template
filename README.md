@@ -30,16 +30,7 @@ https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singb
 tun通用模式：  
 https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun.json
 
-tun-home个人home专属设置：  
-https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_home.json
-
 tun-lmy朋友专属优化设置：  
-https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_lmy.json
-
-tun-ali阿里轻量云专属优化设置：  
-https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_ali.json
-
-tun-dianxin这是电信网络专属解决屏蔽联通IP的问题：  
 https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_lmy.json
 
 tun测试版（非正式不要乱用）：  
