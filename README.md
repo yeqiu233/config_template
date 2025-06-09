@@ -21,6 +21,23 @@ chmod +x /usr/local/bin/nat
 nat
 ```
 
+### 定时脚本
+- 创建一个/usr/local/bin/ds文件，将nds的内容粘贴进去，或者用SFTP工具直接拖进去
+- 赋予可执行权限，之后在SSH终端输入ds命令即可调用
+```
+# 创建脚本文件
+nano /usr/local/bin/ds
+
+# 粘贴上面的脚本内容
+# 按 Ctrl+X，然后按 Y 保存
+
+# 赋予执行权限
+chmod +x /usr/local/bin/ds
+
+# 使用脚本
+ds
+```
+
 ## 适配配置文件：
 
 ### singbox稳定版(1.11.X)：  

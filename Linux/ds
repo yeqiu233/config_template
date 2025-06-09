@@ -1,0 +1,285 @@
+#!/bin/bash
+
+# 主菜单函数
+show_menu() {
+    clear
+    echo "============================="
+    echo "      定时任务管理脚本       "
+    echo "============================="
+    echo "1. 查看定时规则"
+    echo "2. 添加定时规则"
+    echo "3. 修改定时规则"
+    echo "4. 删除定时规则"
+    echo "0. 退出"
+    echo "============================="
+    echo -n "请选择操作 [0-4]: "
+}
+
+# 显示当前定时任务（过滤注释和空行）
+list_jobs() {
+    echo -e "\n当前定时规则:"
+    echo "--------------------------------"
+    crontab -l 2>/dev/null | grep -v '^#' | grep -v '^$' | nl -v 1 -w 2 -s '. '
+    echo "--------------------------------"
+}
+
+# 获取有效输入（支持 */n 格式）
+get_valid_input() {
+    local prompt=$1 min=$2 max=$3
+    while true; do
+        read -p "$prompt" input
+        
+        # 检查是否为空
+        if [ -z "$input" ]; then
+            echo "输入不能为空"
+            continue
+        fi
+        
+        # 支持 * 格式
+        if [ "$input" = "*" ]; then
+            echo "*"
+            return
+        fi
+        
+        # 支持 */n 格式
+        if [[ "$input" =~ ^\*/([0-9]+)$ ]]; then
+            step=${BASH_REMATCH[1]}
+            if [ $step -ge $min ] && [ $step -le $max ]; then
+                echo "$input"
+                return
+            else
+                echo "步长必须在${min}-${max}之间"
+                continue
+            fi
+        fi
+        
+        # 支持数字
+        if [[ "$input" =~ ^[0-9]+$ ]]; then
+            if [ $input -ge $min ] && [ $input -le $max ]; then
+                echo "$input"
+                return
+            else
+                echo "输入必须在${min}-${max}之间"
+                continue
+            fi
+        fi
+        
+        # 其他情况
+        echo "输入无效，请输入${min}-${max}之间的整数，或 * 表示任意，或 */n 表示步长"
+    done
+}
+
+# 检查 at 是否可用
+at_available() {
+    if command -v at &> /dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 添加新任务
+add_job() {
+    echo -e "\n添加新定时任务"
+    
+    # 先选择任务类型
+    echo "请选择任务类型:"
+    echo "1. 永久任务（添加到crontab）"
+    if at_available; then
+        echo "2. 临时任务（一次性，使用at命令）"
+    fi
+    
+    local max_choice=1
+    if at_available; then
+        max_choice=2
+    fi
+    
+    while true; do
+        read -p "请选择 [1-$max_choice]: " choice
+        if [[ $choice =~ ^[1-$max_choice]$ ]]; then
+            break
+        else
+            echo "无效选择，请输入1-$max_choice之间的数字"
+        fi
+    done
+
+    if [ $choice -eq 1 ]; then
+        # 永久任务：输入cron时间参数
+        minute=$(get_valid_input "分钟 (0-59, 或 */n): " 0 59)
+        hour=$(get_valid_input "小时 (0-23, 或 */n): " 0 23)
+        day=$(get_valid_input "日期 (1-31, 或 */n): " 1 31)
+        month=$(get_valid_input "月份 (1-12, 或 */n): " 1 12)
+        weekday=$(get_valid_input "星期 (0-6, 0=星期日, 或 */n): " 0 6)
+    else
+        if ! at_available; then
+            echo "系统未安装at命令，无法设置临时任务"
+            return
+        fi
+        
+        # 临时任务：输入相对时间
+        echo -e "\n请输入相对时间（例如）："
+        echo "  now + 5 minutes   # 5分钟后"
+        echo "  now + 1 hour      # 1小时后"
+        echo "  now + 2 days      # 2天后"
+        echo "  4:30 PM           # 今天下午4:30"
+        echo "  10:00 tomorrow    # 明天上午10:00"
+        echo "  20250610 14:30    # 2025年6月10日14:30"
+        
+        while true; do
+            read -p "输入执行时间: " at_time
+            if [ -z "$at_time" ]; then
+                echo "时间不能为空"
+                continue
+            fi
+            
+            # 测试时间是否有效
+            echo "date" | at "$at_time" 2>/dev/null
+            if [ $? -eq 0 ]; then
+                break
+            else
+                echo "时间格式无效，请重新输入（可参考上述示例）"
+            fi
+        done
+    fi
+
+    read -p "输入要执行的命令: " command
+    while [ -z "$command" ]; do
+        read -p "命令不能为空，请重新输入: " command
+    done
+
+    if [ $choice -eq 1 ]; then
+        # 永久任务 - 询问是否添加输出重定向
+        echo -e "\n是否添加输出重定向?"
+        echo "1. 添加 >/dev/null 2>&1（不发送邮件，丢弃所有输出）"
+        echo "2. 不添加（可能会收到邮件通知）"
+        read -p "请选择 [1-2]: " redirect_choice
+        
+        case $redirect_choice in
+            1) command="$command >/dev/null 2>&1" ;;
+            2) ;;
+            *) echo "使用默认选项（不添加）" ;;
+        esac
+        
+        cron_entry="$minute $hour $day $month $weekday $command"
+        (crontab -l 2>/dev/null; echo "$cron_entry") | crontab -
+        echo "已添加为永久任务"
+    else
+        # 临时任务
+        job_id=$(echo "$command" | at "$at_time" 2>/dev/null | awk '/job/ {print $2}')
+        if [ -n "$job_id" ]; then
+            echo "已添加为临时任务 (作业ID: $job_id)"
+        else
+            echo "添加失败，请检查时间格式"
+        fi
+    fi
+}
+
+# 修改任务
+edit_job() {
+    list_jobs
+    local count=$(crontab -l 2>/dev/null | grep -v '^#' | grep -v '^$' | wc -l)
+    if [ $count -eq 0 ]; then
+        echo "没有定时任务可修改"
+        return
+    fi
+    
+    while true; do
+        read -p "选择要修改的任务序号 (1-$count): " job_num
+        if [[ $job_num =~ ^[0-9]+$ ]] && [ $job_num -ge 1 ] && [ $job_num -le $count ]; then
+            break
+        else
+            echo "输入无效，请输入1-$count之间的整数"
+        fi
+    done
+    
+    echo -e "\n修改任务 #$job_num"
+    minute=$(get_valid_input "分钟 (0-59, 或 */n): " 0 59)
+    hour=$(get_valid_input "小时 (0-23, 或 */n): " 0 23)
+    day=$(get_valid_input "日期 (1-31, 或 */n): " 1 31)
+    month=$(get_valid_input "月份 (1-12, 或 */n): " 1 12)
+    weekday=$(get_valid_input "星期 (0-6, 0=星期日, 或 */n): " 0 6)
+    
+    read -p "输入要执行的命令: " command
+    while [ -z "$command" ]; do
+        read -p "命令不能为空，请重新输入: " command
+    done
+    
+    # 询问是否添加输出重定向
+    echo -e "\n是否添加输出重定向?"
+    echo "1. 添加 >/dev/null 2>&1（不发送邮件，丢弃所有输出）"
+    echo "2. 不添加（可能会收到邮件通知）"
+    read -p "请选择 [1-2]: " redirect_choice
+    
+    case $redirect_choice in
+        1) command="$command >/dev/null 2>&1" ;;
+        2) ;;
+        *) echo "使用默认选项（不添加）" ;;
+    esac
+    
+    new_entry="$minute $hour $day $month $weekday $command"
+    
+    # 生成新crontab
+    tempfile=$(mktemp)
+    crontab -l 2>/dev/null | grep -v '^#' | grep -v '^$' | \
+        awk -v line=$job_num -v new="$new_entry" \
+        'NR==line {print new; next} {print}' > $tempfile
+    
+    crontab $tempfile
+    rm -f $tempfile
+    echo "任务修改成功"
+}
+
+# 删除任务
+delete_job() {
+    list_jobs
+    local count=$(crontab -l 2>/dev/null | grep -v '^#' | grep -v '^$' | wc -l)
+    if [ $count -eq 0 ]; then
+        echo "没有定时任务可删除"
+        return
+    fi
+    
+    while true; do
+        read -p "选择要删除的任务序号 (1-$count): " job_num
+        if [[ $job_num =~ ^[0-9]+$ ]] && [ $job_num -ge 1 ] && [ $job_num -le $count ]; then
+            break
+        else
+            echo "输入无效，请输入1-$count之间的整数"
+        fi
+    done
+    
+    # 生成新crontab
+    tempfile=$(mktemp)
+    crontab -l 2>/dev/null | grep -v '^#' | grep -v '^$' | \
+        awk -v line=$job_num 'NR!=line' > $tempfile
+    
+    crontab $tempfile
+    rm -f $tempfile
+    echo "任务删除成功"
+}
+
+# 主程序
+while true; do
+    show_menu
+    read choice
+    case $choice in
+        1) 
+            list_jobs 
+            echo -e "\n临时任务列表:"
+            echo "--------------------------------"
+            if at_available; then
+                atq
+            else
+                echo "atq 命令不可用，请安装 at 包以查看临时任务"
+            fi
+            echo "--------------------------------"
+            ;;
+        2) add_job ;;
+        3) edit_job ;;
+        4) delete_job ;;
+        0) echo "退出脚本"; exit 0 ;;
+        *) echo "无效选择，请重新输入" ;;
+    esac
+    
+    echo -e "\n按回车键继续..."
+    read
+done
