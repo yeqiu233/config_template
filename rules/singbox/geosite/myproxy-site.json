@@ -1,15 +1,15 @@
 {
-    "version": 1,
-    "rules": [
-      {
-        "domain_suffix": [
-          "177966.xyz",
-          "511966.xyz",
-          "wplhj.pp.ua",
-          "155966.xyz",
-          "533966.xyz"
-        ]
-      }
-    ]
-  }
-    
+  "version": 1,
+  "rules": [
+    {
+      "domain": [
+        "sbt.177966.xyz",
+        "a.my.177966.xyz"
+      ],
+      "domain_suffix": [
+        "me.177966.xyz",
+        "my.177966.xyz"
+      ]
+    }
+  ]
+}
