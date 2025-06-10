@@ -47,6 +47,9 @@ https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singb
 tun通用模式：  
 https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun.json
 
+tun电信模式，解决电信屏蔽联通IP的问题：  
+https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_dianxin.json
+
 tun-lmy朋友专属优化设置：  
 https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singbox/1.11.X/config_tun_lmy.json
 
