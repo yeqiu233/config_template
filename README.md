@@ -1,6 +1,8 @@
 # 仓库声明：
 ⚠️⚠️singbox与mihomo自用配置远程同步与调用仓库，仅供个人使用⚠️⚠️  
 配置文件从1.12.X版本开始配置文件大幅度改动与1.11.X以及以下版本不通用
+## Linux相关脚本：
+-  [个人所能用到的，包括定时，NAT，alist降级等脚本](https://github.com/yeqiu233/config_template/blob/main/Linux.md) 
 
 ## 适配配置文件：
 
