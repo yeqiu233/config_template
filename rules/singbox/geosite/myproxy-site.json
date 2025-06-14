@@ -3,8 +3,12 @@
   "rules": [
     {
       "domain": [
-        "sbt.177966.xyz",
         "996123.xyz",
+        "baa.177966.xyz",
+        "sbt.177966.xyz",
+        "a.lmy.177966.xyz",
+        "ikuai.lmy.177966.xyz",
+        "nas.lmy.177966.xyz",
         "a.my.177966.xyz"
       ],
       "domain_suffix": [
