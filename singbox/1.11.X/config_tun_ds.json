@@ -116,6 +116,7 @@
      {"action":"reject", "protocol":"quic"},
      {"action":"route", "protocol":"bt", "outbound":"🌏️ BT下载"},
      {"action":"route", "domain":["clash.razord.top", " yacd.metacubex.one", " yacd.haishan.me", " d.metacubex.one"], "outbound":"🎯 全球直连"},
+     {"action":"route", "rule_set":["geosite-myproxy","geoip-myproxy"], "outbound":"🇭🇰 香港节点"},
      {"action":"route", "rule_set":["geosite-private","geoip-private"], "outbound":"🎯 全球直连"},
      {"action":"route", "rule_set":["geosite-chat"], "outbound":"🤖 OpenAI"},
      {"action":"route", "rule_set":["geosite-youtube"], "outbound":"📹 YouTube"},
