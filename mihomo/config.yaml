@@ -1,7 +1,7 @@
 # 机场订阅
 proxy-providers:
   个人:
-    url: "机场订阅链接"
+    url: "机场订阅"
     type: http
     interval: 86400
     proxy: ♻️ 自动选择
@@ -136,10 +136,10 @@ dns:
 # 出站策略
 # 注意锚点必须放在引用的上方，可以集中把锚点全部放yaml的顶部。
 # 节点选择锚点
-S1: &S1 {type: select, proxies: [🚀 默认代理, 🔯 故障转移, ♻️ 香港自动, ♻️ 自动选择, 🐸 手动切换, 🇭🇰 香港节点, 🇸🇬 新加坡节点, 🌐 全部节点, 直连]}
-S2: &S2 {type: select, proxies: [🚀 默认代理, 🔯 故障转移, ♻️ 香港自动, ♻️ 自动选择, 🐸 手动切换, 🇭🇰 香港节点, 🇸🇬 新加坡节点, 🌐 全部节点]}
-S3: &S3 {type: select, proxies: [♻️ 自动选择, 🔯 故障转移, ♻️ 香港自动, 🐸 手动切换, 🇭🇰 香港节点, 🇸🇬 新加坡节点, 🌐 全部节点]}
-S4: &S4 {type: select, proxies: [直连, 🚀 默认代理, 🔯 故障转移, ♻️ 香港自动, ♻️ 自动选择, 🐸 手动切换]}
+S1: &S1 {type: select, proxies: [🚀 默认代理, 🔯 故障转移, ♻️ 自动选择, 🐸 手动切换, 🇸🇬 新加坡节点, 🌐 全部节点, 直连]}
+S2: &S2 {type: select, proxies: [🚀 默认代理, 🔯 故障转移, ♻️ 自动选择, 🐸 手动切换, 🇸🇬 新加坡节点, 🌐 全部节点]}
+S3: &S3 {type: select, proxies: [♻️ 自动选择, 🔯 故障转移, 🐸 手动切换, 🇸🇬 新加坡节点, 🌐 全部节点]}
+S4: &S4 {type: select, proxies: [直连, 🚀 默认代理, 🔯 故障转移, ♻️ 自动选择]}
 # 节点策略组配置
 proxy-groups:
   - {name: 🚀 默认代理, <<: *S3}
@@ -157,10 +157,8 @@ proxy-groups:
   - {name: 🎯 直连, <<: *S4}
   - {name: 🐟 漏网之鱼, <<: *S2}
 # 节点地区分组
-  - {name: 🇭🇰 香港节点, type: select, include-all: true, filter: "(?i)港|hk|hongkong|hong kong"}
-  - {name: 🇸🇬 新加坡节点, type: select, include-all: true, filter: "(?i)坡|sg|xinjiapo|SG|坡西"}
-  - {name: 🔯 故障转移, type: fallback, include-all: true, tolerance: 20, interval: 300, filter: "(?=.*(港|坡|美|HK|(?i)Hong))^((?!(台|日|韩|深)).)*$"}
-  - {name: ♻️ 香港自动, type: url-test, include-all: true, tolerance: 20, interval: 300, filter: "(?=.*(港|HK|(?i)Hong))^((?!(台|日|韩|新|深|美)).)*$"}
+  - {name: 🇸🇬 新加坡节点, type: select, include-all: true, filter: "(?i)(坡|sg|xinjiapo|坡西)"}
+  - {name: 🔯 故障转移, type: fallback, include-all: true, tolerance: 20, interval: 300, filter: "(?i)^(?=.*(?:坡|sg|xinjiapo|坡西|韩|美|kr|us))(?!.*(?:台|日|深)).*$"}
   - {name: ♻️ 自动选择, type: url-test, include-all: true, tolerance: 20, interval: 300, filter: "^((?!(直连)).)*$"}
   - {name: 🐸 手动切换, type: select, include-all: true}
   - {name: 🌐 全部节点, type: select, include-all: true}
@@ -170,7 +168,7 @@ proxy-groups:
 # AND为QUIC协议屏蔽
 rules:
   - AND,((DST-PORT,443),(NETWORK,udp)),REJECT-DROP
-  - RULE-SET,myruls,🚀 默认代理
+  - DOMAIN-SUFFIX,qichiyu.com,🚀 默认代理
   - RULE-SET,private_domain,直连
   - RULE-SET,apple_domain,🍎 Apple
   - RULE-SET,ai,🤖 ChatGPT
@@ -198,7 +196,6 @@ rule-anchor:
   domain: &domain {type: http, interval: 86400, behavior: domain, format: mrs}
   class: &class {type: http, interval: 86400, behavior: classical, format: text}
 rule-providers: 
-  myruls: { <<: *domain, url: "https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/rules/mihomo/geosite/myruls.mrs"}
   private_domain: { <<: *domain, url: "https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/private.mrs"}
   ai: {  <<: *domain, url: "https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/category-ai-!cn.mrs" }
   youtube_domain: { <<: *domain, url: "https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/youtube.mrs"}
