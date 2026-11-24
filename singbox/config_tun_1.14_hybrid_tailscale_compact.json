@@ -194,10 +194,10 @@
       "type": "api",
       "listen": "0.0.0.0",
       "listen_port": 9096,
-      "secret": "CHANGE_ME_SINGBOX_API_SECRET",
+      "secret": "91lhjdmmlM@..",
       "dashboard": {
         "enabled": true,
-        "path": "/etc/sing-box/dashboard",
+        "path": "/etc/sing-box/ui/dashboard",
         "download_url": "https://github.com/SagerNet/sing-box-dashboard/archive/refs/heads/gh-pages.zip",
         "http_client": "http_proxy",
         "update_interval": "1d"
@@ -207,8 +207,8 @@
   "experimental": {
     "clash_api": {
       "external_controller": "0.0.0.0:9095",
-      "external_ui": "/etc/sing-box/ui",
-      "secret": "CHANGE_ME_ZASHBOARD_SECRET",
+      "external_ui": "/etc/sing-box/ui/zashboard",
+      "secret": "91lhjdmmlM@..",
       "external_ui_download_url": "https://github.com/Zephyruso/zashboard/archive/refs/heads/gh-pages.zip",
       "external_ui_download_detour": "🚀 节点选择",
       "default_mode": "rule",
