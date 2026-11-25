@@ -719,7 +719,128 @@ menu_draw(){
     for ((i=0;i<10;i+=2)); do
         printf '  %s%02d%s  %s        %s%02d%s  %s\n' "$accent" "$((i+1))" "$reset" "${names[i]}" "$accent" "$((i+2))" "$reset" "${names[i+1]}"
     done
-    printf '\n  %s00%s  退出\n\n%s%s%s\n' "$Y" "$reset" "$accent" "$rule" "$reset"
+    printf '  %s11%s  卸载程序        %s00%s  退出\n\n%s%s%s\n' "$R" "$reset" "$Y" "$reset" "$accent" "$rule" "$reset"
+}
+# Uninstall only this manager's units, official Debian package and known files.
+uninstall_unit_name(){ [[ $1 =~ ^sb-manager-(config|panel-[a-f0-9]{16}|network-guard)\.(service|timer)$ ]]; }
+uninstall_stop_unit(){
+    local u=$1 load active
+    local rc=0
+    load=$(systemctl show "$u" -p LoadState --value 2>/dev/null) || rc=$?
+    if [[ $load == not-found ]]; then return 0; fi
+    ((rc == 0)) && [[ -n $load ]] || { err "无法读取 $u 的状态"; return 1; }
+    systemctl stop "$u" || return 1
+    active=$(systemctl show "$u" -p ActiveState --value) || return 1
+    case $active in inactive|failed) return 0;; *) err "$u 尚未停止：$active";; esac
+}
+uninstall_disable_unit(){
+    local u=$1 state
+    state=$(systemctl is-enabled "$u" 2>/dev/null) || :
+    case $state in enabled|enabled-runtime|linked|linked-runtime) systemctl disable "$u";; *) return 0;; esac
+}
+uninstall_trusted_file(){
+    local f=$1 mode
+    [[ -f $f && ! -L $f && $(stat -c '%u:%h' -- "$f") == 0:1 ]] || return 1
+    mode=$(stat -c '%a' -- "$f") || return 1
+    (( (8#$mode & 022) == 0 ))
+}
+uninstall_owned_script(){
+    local f=$1
+    [[ -e $f || -L $f ]] || return 0
+    if [[ -L $f ]]; then
+        local dest; dest=$(realpath -m -- "$f") || return 1
+        case $dest in /usr/local/bin/sb|/usr/local/sbin/sb|/usr/local/sbin/sb-manager|/etc/sing-box/sb|/etc/sing-box/manager/sb-manager) rm -f -- "$f";; *) warn "保留非本工具链接：$f";; esac
+    elif [[ -f $f ]] && grep -Fq 'sing-box 管理工具' "$f"; then
+        rm -f -- "$f"
+    else
+        warn "保留无法确认归属的文件：$f"
+    fi
+}
+uninstall_files(){
+    local f u row state listed live query_rc=0 profile=/etc/profile.d/sb.sh
+    local -A units=([sb-manager-config.timer]=1 [sb-manager-config.service]=1 [sb-manager-network-guard.timer]=1 [sb-manager-network-guard.service]=1)
+    # Include both enabled/disabled unit files and transient network guards.
+    listed=$(systemctl list-unit-files 'sb-manager-*.timer' 'sb-manager-*.service' --no-legend --no-pager) || return 1
+    live=$(systemctl list-units 'sb-manager-*.timer' 'sb-manager-*.service' --all --plain --no-legend --no-pager) || return 1
+    while read -r u row; do
+        uninstall_unit_name "$u" && units["$u"]=1
+    done <<< "$listed"$'\n'"$live"
+    for f in "$UNITS"/sb-manager-*.timer "$UNITS"/sb-manager-*.service "$UNITS"/timers.target.wants/sb-manager-*.timer; do
+        [[ -e $f || -L $f ]] || continue
+        u=${f##*/}; uninstall_unit_name "$u" && units["$u"]=1
+    done
+    info '[1/6] 停止配置、面板自动更新和网络保护任务……'
+    for u in "${!units[@]}"; do
+        [[ $u == *.timer ]] || continue
+        uninstall_stop_unit "$u" && uninstall_disable_unit "$u" || { err "无法停止或禁用 $u，取消后续卸载"; return 1; }
+    done
+    for u in "${!units[@]}"; do
+        [[ $u == *.service ]] || continue
+        uninstall_stop_unit "$u" || { err "无法停止 $u，取消后续卸载"; return 1; }
+    done
+    info '[2/6] 停止服务并卸载内核……'
+    uninstall_stop_unit sing-box.service && uninstall_disable_unit sing-box.service || { err '无法安全停止 sing-box，取消后续卸载'; return 1; }
+    # dpkg purges only the named official package; no autoremove of shared dependencies.
+    query_rc=0
+    state=$(dpkg-query -W -f='${Status}' sing-box 2>/dev/null) || query_rc=$?
+    ((query_rc <= 1)) || { err '无法读取 dpkg 软件包状态，取消清理'; return 1; }
+    if [[ -n $state && $state != *' not-installed' ]]; then
+        DEBIAN_FRONTEND=noninteractive dpkg --purge sing-box || { err '软件包卸载失败，配置和管理脚本保留，请处理 dpkg 错误后重试'; return 1; }
+    fi
+    query_rc=0
+    state=$(dpkg-query -W -f='${Status}' sing-box 2>/dev/null) || query_rc=$?
+    ((query_rc <= 1)) || { err '无法读取 dpkg 软件包状态，取消清理'; return 1; }
+    [[ -z $state || $state == *' not-installed' ]] || { err '软件包仍存在，取消清理'; return 1; }
+    info '[3/6] 清理本工具的 systemd 配置……'
+    for u in "${!units[@]}"; do
+        rm -f -- "$UNITS/$u" "$UNITS/$u.tmp" "$UNITS/timers.target.wants/$u" || return 1
+        if [[ $u == *.timer ]]; then rm -f -- "/var/lib/systemd/timers/stamp-$u" || return 1; fi
+    done
+    rm -f -- "$UNITS/sing-box.service.d/90-sb-manager.conf" "$UNITS/sing-box.service.d/90-sb-manager.conf.tmp" "$UNITS/sing-box.service.d/91-sb-start-hold.conf" || return 1
+    rmdir "$UNITS/sing-box.service.d" 2>/dev/null || true
+    systemctl daemon-reload || return 1
+    info '[4/6] 清理配置、认证数据、缓存、面板及转发配置……'
+    rm -rf --one-file-system -- "$DIR" /var/lib/sing-box /var/lib/sing-box-manager || return 1
+    rm -f -- /run/sb-release-cache.json /etc/sysctl.d/99-sing-box-forward.conf /etc/sysctl.d/99-sing-box-forward.conf.tmp || return 1
+    info '[5/6] 清理快捷入口……'
+    if [[ -e $profile || -L $profile ]]; then
+        if uninstall_trusted_file "$profile" && { grep -Fxq '# sing-box manager shortcut' "$profile" || grep -Fxq "alias sb='/usr/local/bin/sb'" "$profile" || grep -Fxq "alias sb='/bin/bash /usr/local/bin/sb'" "$profile"; }; then
+            rm -f -- "$profile" || return 1
+        else warn "保留无法确认归属的文件：$profile"; fi
+    fi
+    for f in /root/.bashrc /root/.profile /root/.bash_profile /root/.bash_login; do
+        [[ -e $f || -L $f ]] || continue
+        if ! uninstall_trusted_file "$f"; then warn "启动文件权限或链接不安全，未修改：$f"; continue; fi
+        sed -i -e '/^# sing-box manager shortcut$/d' \
+            -e '\#^\[ ! -r /etc/profile\.d/sb\.sh \] || \. /etc/profile\.d/sb\.sh$#d' \
+            -e '/^alias sb=/ { \|/usr/local/bin/sb|d; \|/usr/local/sbin/sb|d; \|/etc/sing-box/sb|d; }' "$f" || return 1
+    done
+    info '[6/6] 删除管理脚本及备份……'
+    # Never remove /usr/bin/sb unless it is our old shortcut (lrzsz also provides sb).
+    if [[ -L /usr/bin/sb ]]; then uninstall_owned_script /usr/bin/sb || return 1; fi
+    for f in /usr/local/sbin/sb /usr/local/sbin/sb-manager /root/sb.sh /usr/local/bin/.sb.previous "$SELF"; do
+        uninstall_owned_script "$f" || return 1
+    done
+    rm -f -- "$LOCK" || return 1
+    hash -r
+    if command -v sing-box >/dev/null 2>&1; then warn "仍有非本次软件包管理的内核：$(command -v sing-box)，请手动确认"; fi
+    if [[ -e $SELF || -L $SELF ]]; then warn "管理命令仍存在：$SELF，请手动确认"; fi
+    ok '本工具管理的软件包及文件清理完成。'
+    info '保留公共依赖、系统日志及当前 IPv4/IPv6 转发值；不清空防火墙，不自动重启。'
+    info '当前 SSH 若仍缓存 sb 别名，请执行 unalias sb 2>/dev/null; hash -r，或重新登录。'
+}
+uninstall_manager(){
+    local answer
+    printf '\n%s警告：此操作将彻底卸载 sing-box 及 sb 管理工具。%s\n' "$R" "$N"
+    printf '配置、备份、订阅、面板、缓存和 Tailscale 认证数据都会被删除，不可恢复。\n'
+    printf '若依赖 sing-box/Tailscale 远程连接，请先改用本地控制台，否则可能失联。\n'
+    read -r -p '确认卸载请输入 DELETE（回车取消）：' answer || return 1
+    if [[ $answer != DELETE ]]; then info '已取消卸载'; return 1; fi
+    need systemctl dpkg dpkg-query flock realpath || return 1
+    [[ -d /run/systemd/system ]] || { err '需要正在运行的 systemd'; return 1; }
+    init_lock || return 1
+    # Do not call init_runtime: uninstall must also work if config is missing or invalid.
+    ( flock -n 9 || { err '其他管理任务正在运行，请稍后重试'; exit 1; }; uninstall_files ) 9<"$LOCK"
 }
 main(){ local a v s e; while true; do
     [[ ! -t 1 ]] || printf '\033[2J\033[H'
@@ -727,7 +848,7 @@ main(){ local a v s e; while true; do
     menu_draw "$v" "$s" "$e"
     read -r -p '  请输入功能编号: ' a || return 0
     printf '\n'
-    case $a in 1|01) install_box;; 2|02) locked update_config manual;; 3|03) locked auto_config;; 4|04) locked defaults;; 5|05) locked forwarding;; 6|06) locked restart_box && ok '服务已重启' || err '重启失败，请查看日志';; 7|07) locked systemctl stop sing-box && ok '服务已停止';; 8|08) trap ' : ' INT; (trap 'exit 130' INT; logs); trap - INT;; 9|09) locked autostart;; 10) locked panel_menu;; 0|00) return 0;; *) warn '请输入 0 到 10';; esac
+    case $a in 1|01) install_box;; 2|02) locked update_config manual;; 3|03) locked auto_config;; 4|04) locked defaults;; 5|05) locked forwarding;; 6|06) locked restart_box && ok '服务已重启' || err '重启失败，请查看日志';; 7|07) locked systemctl stop sing-box && ok '服务已停止';; 8|08) trap ' : ' INT; (trap 'exit 130' INT; logs); trap - INT;; 9|09) locked autostart;; 10) locked panel_menu;; 11) if uninstall_manager; then return 0; fi;; 0|00) return 0;; *) warn '请输入 0 到 11';; esac
     printf '\n'; read -r -p '按回车返回主菜单……' a || return 0
  done; }
 [[ $EUID == 0 ]] || { err '请使用 root 用户运行'; exit 1; }
@@ -833,7 +954,7 @@ PROFILE
 menu_check(){
     local out
     out=$(printf '00\n' | timeout 15s "$1" 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
-    [[ $out == *'sing-box 管理工具'* && $out == *'安装升级'* && $out == *'更新面板'* ]]
+    [[ $out == *'sing-box 管理工具'* && $out == *'安装升级'* && $out == *'更新面板'* && $out == *'卸载程序'* ]]
 }
 install_manager(){
     need realpath timeout install stat || return 1
