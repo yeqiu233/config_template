@@ -18,6 +18,10 @@ https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/singb
 
 https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/mihomo/config.yaml
 
+### mihomo覆写所有支持内核客户端版本通用：
+
+https://gh-proxy.com/https://github.com/yeqiu233/config_template/blob/main/mihomo/override.yaml
+
 ## 一键安装singbox内核管理工具
 
 
