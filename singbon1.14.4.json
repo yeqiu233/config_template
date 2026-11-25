@@ -64,7 +64,7 @@
       "auto_redirect": true,
       "dns_mode": "hijack",
       "strict_route": true,
-      "route_exclude_address": ["100.64.0.0/10", "192.168.100.0/24"],
+      "route_exclude_address": ["100.64.0.0/10", "192.168.0.0/16"],
       "stack": "mixed"
     },
     {
