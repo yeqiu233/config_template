@@ -1,0 +1,435 @@
+# Mihomo 精细化分流覆写模板（基于 config_tun_dx.json）
+# 用途：与原订阅合并，保留 proxies / proxy-providers；替换本文件涉及的同名模块。
+# 不强制启用 TUN，不修改订阅、入站端口、控制面板及密码。
+# 使用支持 fake-ip-filter-mode: rule、inline rule-provider 的新版 Mihomo。
+# 规则更新保留原配置使用的 gh-proxy.com 镜像；可按网络情况替换。
+
+mode: rule
+ipv6: false
+find-process-mode: strict
+profile:
+  store-selected: true
+  store-fake-ip: true
+
+# ==================== DNS ====================
+# 国内 DNS 直连，国外已知服务 DNS 走默认代理，未知域名先国内解析供 IP 判定。
+# 不启用全局 respect-rules 或 fallback-filter，以避免 DNS 自引用和把国内地址误判为污染。
+# DNS IP 字面量 + 显式出站，避免节点域名与代理 DNS 相互依赖。
+dns:
+  enable: true
+  cache-algorithm: arc
+  prefer-h3: false
+  use-hosts: true
+  use-system-hosts: true
+  respect-rules: false
+  listen: 0.0.0.0:1053
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/15
+  fake-ip-filter-mode: rule
+  fake-ip-filter:
+    # 本地、Tailscale、国内关键业务优先返回真实地址。
+    - 'RULE-SET,local_domain,real-ip'
+    - 'RULE-SET,private_domain,real-ip'
+    - 'RULE-SET,tailscale_domain,real-ip'
+    - 'RULE-SET,dashboard_domain,real-ip'
+    - 'RULE-SET,wechat_domain,real-ip'
+    - 'RULE-SET,payment_domain,real-ip'
+    - 'RULE-SET,bank_domain,real-ip'
+    - 'RULE-SET,shopping_domain,real-ip'
+    - 'RULE-SET,media_domain,real-ip'
+    - 'RULE-SET,life_domain,real-ip'
+    - 'RULE-SET,office_domain,real-ip'
+    - 'RULE-SET,apple_domain,real-ip'
+    - 'RULE-SET,tracker_domain,real-ip'
+    - 'RULE-SET,foreign_real_domain,real-ip'
+    - 'RULE-SET,extra_real_domain,real-ip'
+    # 明确的国外服务优先于 cn_domain，避免交叉规则误命中。
+    - 'RULE-SET,ai,fake-ip'
+    - 'RULE-SET,github_domain,fake-ip'
+    - 'RULE-SET,youtube_domain,fake-ip'
+    - 'RULE-SET,google_domain,fake-ip'
+    - 'RULE-SET,onedrive_domain,fake-ip'
+    - 'RULE-SET,microsoft_domain,fake-ip'
+    - 'RULE-SET,tiktok_domain,fake-ip'
+    - 'RULE-SET,speedtest_domain,fake-ip'
+    - 'RULE-SET,telegram_domain,fake-ip'
+    - 'RULE-SET,netflix_domain,fake-ip'
+    - 'RULE-SET,gfw_domain,fake-ip'
+    - 'RULE-SET,cn_domain,real-ip'
+    - 'MATCH,fake-ip'
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  # 节点域名不依赖代理自身。
+  proxy-server-nameserver:
+    - 'https://223.5.5.5/dns-query#DIRECT'
+    - 'https://120.53.53.53/dns-query#DIRECT'
+  nameserver:
+    - 'https://223.5.5.5/dns-query#DIRECT'
+    - 'https://120.53.53.53/dns-query#DIRECT'
+  direct-nameserver:
+    - 'https://223.5.5.5/dns-query#DIRECT'
+    - 'https://120.53.53.53/dns-query#DIRECT'
+  direct-nameserver-follow-policy: true
+  nameserver-policy:
+    # 本地 DNS 必须能解析局域网域名；若系统 DNS 指回 Mihomo，改成真实 LAN DNS 地址。
+    'rule-set:local_domain,private_domain':
+      - system
+    'rule-set:tailscale_domain,dashboard_domain':
+      - 'https://223.5.5.5/dns-query#DIRECT'
+      - 'https://120.53.53.53/dns-query#DIRECT'
+    'rule-set:wechat_domain,payment_domain,bank_domain,shopping_domain,media_domain,life_domain,office_domain,apple_domain,tracker_domain':
+      - 'https://223.5.5.5/dns-query#DIRECT'
+      - 'https://120.53.53.53/dns-query#DIRECT'
+    'rule-set:foreign_real_domain,google_special_domain,ai,github_domain,youtube_domain,google_domain,onedrive_domain,microsoft_domain,tiktok_domain,speedtest_domain,telegram_domain,netflix_domain,gfw_domain':
+      - 'https://1.1.1.1/dns-query#🚀 默认代理'
+      - 'https://8.8.8.8/dns-query#🚀 默认代理'
+    # geolocation-!cn 刻意不指定国外 DNS：宽泛域名集合不能先于国内 IP 判定。
+    'rule-set:cn_domain':
+      - 'https://223.5.5.5/dns-query#DIRECT'
+      - 'https://120.53.53.53/dns-query#DIRECT'
+
+# ==================== 域名嗅探 ====================
+# 从 TLS/HTTP/QUIC 恢复域名用于分流，但不强制改写原始目标地址。
+sniffer:
+  enable: true
+  force-dns-mapping: true
+  parse-pure-ip: true
+  override-destination: false
+  sniff:
+    HTTP:
+      ports: [80, 8080-8880]
+    TLS:
+      ports: [443, 8443]
+    QUIC:
+      ports: [443, 8443]
+  skip-domain:
+    - '+.lan'
+    - '+.local'
+    - '+.home.arpa'
+    - '+.ts.net'
+    - '+.tailscale.com'
+    - '+.tailscale.io'
+
+# ==================== 策略组 ====================
+# DIRECT 是 Mihomo 内置直连，不依赖订阅中存在名为“直连”的节点。
+# include-all 同时兼容订阅的 proxies 与 proxy-providers。
+# 国内关键业务硬直连；普通国内流量保留可切换策略组。
+proxy-groups:
+  - {name: '🚀 默认代理', type: 'select', proxies: ['♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点', 'DIRECT']}
+  - {name: '📹 YouTube', type: 'select', proxies: ['🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
+  - {name: '🍀 Google', type: 'select', proxies: ['🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
+  - {name: '🤖 ChatGPT', type: 'select', proxies: ['🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
+  - {name: '👨🏿‍💻 GitHub', type: 'select', proxies: ['🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
+  - {name: '🐬 OneDrive', type: 'select', proxies: ['🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
+  - {name: '🪟 Microsoft', type: 'select', proxies: ['🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点', 'DIRECT']}
+  - {name: '🎵 TikTok', type: 'select', proxies: ['🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
+  - {name: '📲 Telegram', type: 'select', proxies: ['🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
+  - {name: '🎥 NETFLIX', type: 'select', proxies: ['🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
+  - {name: '✈️ Speedtest', type: 'select', proxies: ['🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点', 'DIRECT']}
+  - {name: '🍎 Apple', type: 'select', proxies: ['DIRECT', '🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
+  - {name: '🎯 直连', type: 'select', proxies: ['DIRECT', '🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
+  - {name: '🌏 BT下载', type: 'select', proxies: ['DIRECT', '🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
+  - {name: '🐟 漏网之鱼', type: 'select', proxies: ['🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点', 'DIRECT']}
+  # 地区过滤仅用于实际订阅节点。未提供对应地区节点时，不要选空组。
+  - {name: '🇸🇬 新加坡节点', type: 'select', include-all: true, filter: '(?i)🇸🇬|新加坡|狮城|坡西|Singapore|Xinjiapo|(?:^|[^a-z])SG(?:[^a-z]|$)|坡[0-9]', exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass'}
+  - {name: '🇺🇸 美国节点', type: 'select', include-all: true, filter: '(?i)🇺🇸|美国|美國|洛杉矶|纽约|凤凰城|迈阿密|United\s*States|America|(?:^|[^a-z])USA?(?:[^a-z]|$)|美[0-9]|美西|美东', exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass'}
+  - {name: '🔯 故障转移', type: 'fallback', include-all: true, exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass', url: 'https://www.google.com/generate_204', interval: 300, lazy: true, expected-status: '204'}
+  - {name: '♻️ 自动选择', type: 'url-test', include-all: true, exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass', url: 'https://www.google.com/generate_204', interval: 300, lazy: true, expected-status: '204', tolerance: 50}
+  - {name: '🐸 手动切换', type: 'select', include-all: true, exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass'}
+  - {name: '🌐 全部节点', type: 'select', include-all: true, exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass'}
+# ==================== 路由规则（自上而下） ====================
+# 注意：特定业务分组 > IP 专项 > 国内 IP > 宽泛国外域名 > 兜底。
+# 不在开头全局禁止 UDP/443，只对指定国外服务的 UDP/443 拦截。
+rules:
+  # 1. 局域网/Tailscale，不受可切换的国内策略组影响。
+  # 此处 no-resolve 仅针对已经有目标 IP 的流量，避免抢先解析全部域名。
+  - 'RULE-SET,private_ip,DIRECT,no-resolve'
+  - 'RULE-SET,local_domain,DIRECT'
+  - 'RULE-SET,private_domain,DIRECT'
+  - 'RULE-SET,tailscale_domain,DIRECT'
+  - 'RULE-SET,dashboard_domain,DIRECT'
+  # 可在此添加自有 ERP/企业域名硬直连，例如 DOMAIN-SUFFIX,example.com,DIRECT。
+  # 若需客户端也返回真实 IP，同时在 DNS fake-ip-filter 前部加入对应 real-ip 规则。
+  # 2. 国内关键应用硬直连；完整继承 sing-box 内嵌域名。
+  - 'RULE-SET,wechat_domain,DIRECT'
+  - 'RULE-SET,payment_domain,DIRECT'
+  - 'RULE-SET,bank_domain,DIRECT'
+  - 'RULE-SET,shopping_domain,DIRECT'
+  - 'RULE-SET,media_domain,DIRECT'
+  - 'RULE-SET,life_domain,DIRECT'
+  - 'RULE-SET,office_domain,DIRECT'
+  # 3. 仅国外指定服务 UDP/443：近似 sing-box 的按服务 QUIC 拦截。
+  - 'AND,((NETWORK,udp),(DST-PORT,443),(OR,((RULE-SET,youtube_domain),(RULE-SET,google_domain),(RULE-SET,ai),(RULE-SET,tiktok_domain),(RULE-SET,netflix_domain),(RULE-SET,google_special_domain)))),REJECT-DROP'
+  # 4. BT：本机进程 + 公共 Tracker；不按任意端口一刀切。
+  - 'PROCESS-NAME-REGEX,(?i)^(qbittorrent(-nox)?|transmission(-daemon|-gtk|-qt)?|aria2c|utorrent|bittorrent|bitcomet|deluge(d|-gtk)?|tixati|vuze)(\.exe)?$,🌏 BT下载'
+  - 'RULE-SET,tracker_domain,🌏 BT下载'
+  # 5. 业务域名独立策略。GitHub/YouTube/OneDrive 优先于 Google/Microsoft 等宽类。
+  - 'RULE-SET,ai,🤖 ChatGPT'
+  - 'RULE-SET,github_domain,👨🏿‍💻 GitHub'
+  - 'RULE-SET,youtube_domain,📹 YouTube'
+  - 'RULE-SET,google_special_domain,🍀 Google'
+  - 'RULE-SET,google_domain,🍀 Google'
+  - 'RULE-SET,onedrive_domain,🐬 OneDrive'
+  - 'RULE-SET,microsoft_domain,🪟 Microsoft'
+  - 'RULE-SET,tiktok_domain,🎵 TikTok'
+  - 'RULE-SET,speedtest_domain,✈️ Speedtest'
+  - 'RULE-SET,telegram_domain,📲 Telegram'
+  - 'RULE-SET,netflix_domain,🎥 NETFLIX'
+  - 'RULE-SET,apple_domain,🍎 Apple'
+  # 6. 已明确的 GFW 站点仍优先代理，避免污染 IP 把它们误导向直连。
+  - 'RULE-SET,gfw_domain,🚀 默认代理'
+  - 'RULE-SET,cn_domain,🎯 直连'
+  # 7. 关键：这里故意不加 no-resolve。未知域名触发真实 DNS 查询后判断目标 IP。
+  - 'RULE-SET,private_ip,DIRECT'
+  # 8. 已经触发真实解析，专项 IP 优先于通用国内/国外分流。
+  - 'RULE-SET,google_ip,🍀 Google,no-resolve'
+  - 'RULE-SET,telegram_ip,📲 Telegram,no-resolve'
+  - 'RULE-SET,netflix_ip,🎥 NETFLIX,no-resolve'
+  - 'RULE-SET,apple_ip,🍎 Apple,no-resolve'
+  # 9. 国内真实 IP 优先于宽泛的国外域名集合。故意不加 no-resolve。
+  - 'RULE-SET,cn_ip,🎯 直连'
+  - 'RULE-SET,geolocation-!cn,🚀 默认代理'
+  - 'MATCH,🐟 漏网之鱼'
+# ==================== 规则集 ====================
+# 远程规则统一 MRS；国内 APP 等使用内联域名，避免另外托管文件。
+# 每个远程规则单独缓存，不依赖 sing-box 的 SRS 文件。
+rule-providers:
+  private_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/private_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/private.mrs'}
+  ai: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/ai.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ai-!cn.mrs'}
+  youtube_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/youtube_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/youtube.mrs'}
+  google_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/google_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/google.mrs'}
+  github_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/github_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/github.mrs'}
+  telegram_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/telegram_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/telegram.mrs'}
+  netflix_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/netflix_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/netflix.mrs'}
+  onedrive_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/onedrive_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/onedrive.mrs'}
+  microsoft_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/microsoft_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/microsoft.mrs'}
+  apple_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/apple_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/apple.mrs'}
+  tiktok_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/tiktok_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/tiktok.mrs'}
+  geolocation-!cn: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/geolocation-!cn.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/geolocation-!cn.mrs'}
+  cn_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/cn_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.mrs'}
+  bank_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/bank_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-bank-cn.mrs'}
+  cn_ip: {type: http, behavior: ipcidr, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/cn_ip.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.mrs'}
+  google_ip: {type: http, behavior: ipcidr, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/google_ip.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/google.mrs'}
+  telegram_ip: {type: http, behavior: ipcidr, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/telegram_ip.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/telegram.mrs'}
+  netflix_ip: {type: http, behavior: ipcidr, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/netflix_ip.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/netflix.mrs'}
+  apple_ip: {type: http, behavior: ipcidr, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/apple_ip.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo-lite/geoip/apple.mrs'}
+  gfw_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/gfw_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/gfw.mrs'}
+  speedtest_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/speedtest_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/ookla-speedtest.mrs'}
+  tracker_domain: {type: http, behavior: domain, format: mrs, interval: 86400, proxy: DIRECT, path: ./ruleset/tracker_domain.mrs, url: 'https://gh-proxy.com/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-public-tracker.mrs'}
+  # 本地/保留网段，明确排除 fake-ip 网段 198.18.0.0/15。
+  private_ip:
+    type: inline
+    behavior: ipcidr
+    payload:
+      - '10.0.0.0/8'
+      - '172.16.0.0/12'
+      - '192.168.0.0/16'
+      - '127.0.0.0/8'
+      - '169.254.0.0/16'
+      - '100.64.0.0/10'
+      - 'fc00::/7'
+      - 'fe80::/10'
+      - '::1/128'
+  local_domain:
+    type: inline
+    behavior: domain
+    payload:
+      - '+.lan'
+      - '+.home.arpa'
+      - '+.local'
+      - '+.ts.net'
+      - '+.in-addr.arpa'
+      - '+.ip6.arpa'
+      - 'localhost'
+  tailscale_domain:
+    type: inline
+    behavior: domain
+    payload:
+      - '+.tailscale.com'
+      - '+.tailscale.io'
+  dashboard_domain:
+    type: inline
+    behavior: domain
+    payload:
+      - 'clash.razord.top'
+      - 'yacd.metacubex.one'
+      - 'yacd.haishan.me'
+      - 'd.metacubex.one'
+  google_special_domain:
+    type: inline
+    behavior: domain
+    payload:
+      - '+.services.googleapis.cn'
+      - '+.xn--ngstr-lra8j.com'
+  wechat_domain:
+    type: inline
+    behavior: domain
+    payload:
+      - '+.gtimg.cn'
+      - '+.gtimg.com'
+      - '+.qcloudimg.com'
+      - '+.qlogo.cn'
+      - '+.qpic.cn'
+      - '+.qq.com'
+      - '+.servicewechat.com'
+      - '+.wechat.com'
+      - '+.wechatapp.com'
+      - '+.wechatpay.com'
+      - '+.weixin.com'
+      - '+.weixinbridge.com'
+  payment_domain:
+    type: inline
+    behavior: domain
+    payload:
+      - '+.95516.com'
+      - '+.alipay.cn'
+      - '+.alipay.com'
+      - '+.alipay.com.cn'
+      - '+.alipayobjects.com'
+      - '+.mybank.cn'
+      - '+.unionpay.cn'
+      - '+.unionpay.com'
+  shopping_domain:
+    type: inline
+    behavior: domain
+    payload:
+      - '+.1688.com'
+      - '+.360buy.com'
+      - '+.360buyimg.com'
+      - '+.alicdn.com'
+      - '+.jd.com'
+      - '+.jd.hk'
+      - '+.pddpic.com'
+      - '+.pinduoduo.com'
+      - '+.suning.com'
+      - '+.taobao.com'
+      - '+.taobaocdn.com'
+      - '+.tbcdn.cn'
+      - '+.tmall.com'
+      - '+.tmall.hk'
+      - '+.vip.com'
+      - '+.vipstatic.com'
+      - '+.xhscdn.com'
+      - '+.xiaohongshu.com'
+      - '+.yangkeduo.com'
+  media_domain:
+    type: inline
+    behavior: domain
+    payload:
+      - '+.biliapi.com'
+      - '+.biliapi.net'
+      - '+.bilibili.com'
+      - '+.bilivideo.cn'
+      - '+.bilivideo.com'
+      - '+.douyin.com'
+      - '+.douyincdn.com'
+      - '+.douyinpic.com'
+      - '+.douyinvod.com'
+      - '+.douyu.com'
+      - '+.douyucdn.cn'
+      - '+.gifshow.com'
+      - '+.hdslb.com'
+      - '+.hunantv.com'
+      - '+.huya.com'
+      - '+.iesdouyin.com'
+      - '+.iqiyi.com'
+      - '+.iqiyipic.com'
+      - '+.ksapisrv.com'
+      - '+.kuaishou.com'
+      - '+.kugou.com'
+      - '+.kuwo.cn'
+      - '+.mgtv.com'
+      - '+.music.163.com'
+      - '+.qiyi.com'
+      - '+.ykimg.com'
+      - '+.youku.com'
+      - '+.yximgs.com'
+  life_domain:
+    type: inline
+    behavior: domain
+    payload:
+      - '+.12306.cn'
+      - '+.amap.com'
+      - '+.autonavi.com'
+      - '+.baidu.com'
+      - '+.bdimg.com'
+      - '+.bdstatic.com'
+      - '+.cainiao.com'
+      - '+.ctrip.com'
+      - '+.dianping.com'
+      - '+.dpfile.com'
+      - '+.ele.me'
+      - '+.elemecdn.com'
+      - '+.meituan.com'
+      - '+.meituan.net'
+      - '+.qunar.com'
+      - '+.sf-express.com'
+      - '+.sinaimg.cn'
+      - '+.weibo.cn'
+      - '+.weibo.com'
+      - '+.xiaojukeji.com'
+      - '+.zhihu.com'
+      - '+.zhimg.com'
+  office_domain:
+    type: inline
+    behavior: domain
+    payload:
+      - '+.115.com'
+      - '+.123pan.com'
+      - '+.aliyundrive.com'
+      - '+.dingtalk.com'
+      - '+.feishu.cn'
+      - '+.feishu.net'
+      - '+.kdocs.cn'
+      - '+.kingsoft.com.cn'
+      - '+.quark.cn'
+      - '+.wps.cn'
+      - '+.wps.com.cn'
+  foreign_real_domain:
+    type: inline
+    behavior: domain
+    payload:
+      - 'stun.l.google.com'
+      - 'stun1.l.google.com'
+      - 'stun2.l.google.com'
+      - 'stun3.l.google.com'
+      - 'stun4.l.google.com'
+      - 'stun.cloudflare.com'
+      - 'stun.nextcloud.com'
+      - 'time.google.com'
+      - 'time.cloudflare.com'
+      - 'time.windows.com'
+      - 'connectivitycheck.gstatic.com'
+      - 'connectivitycheck.android.com'
+      - 'clients3.google.com'
+      - 'www.msftconnecttest.com'
+      - 'dns.msftncsi.com'
+      - '+.pool.ntp.org'
+      - '+.msftconnecttest.com'
+      - '+.msftncsi.com'
+  extra_real_domain:
+    type: inline
+    behavior: domain
+    payload:
+      - '+.services.googleapis.cn'
+      - '+.xn--ngstr-lra8j.com'
+      - 'time.*.com'
+# ==================== Linux DX/LT 旁路由可选 TUN ====================
+# 默认不覆写 TUN，防止安装时或未接入订阅时自动接管网络。
+# 如果实际运行在 DX/LT Linux 容器，确认已有 TUN 权限和系统路由后再合并下列设置：
+# tun:
+#   enable: true
+#   stack: mixed
+#   auto-route: true
+#   auto-redirect: true
+#   auto-detect-interface: true
+#   strict-route: true
+#   dns-hijack: [any:53, 'tcp://any:53']
+#   route-exclude-address:
+#     - 192.168.0.0/16
+#     - 100.64.0.0/10
+#     - fd7a:115c:a1e0::/48
+# 不把 cn_ip 全量加入 route-exclude-address-set，否则会绕过各业务的精细分流。
+# 若系统/路由器 DNS 指回 1053，确保上游 local_domain 使用实际 LAN DNS 而不是自身。
