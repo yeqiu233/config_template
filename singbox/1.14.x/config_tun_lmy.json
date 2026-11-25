@@ -31,6 +31,9 @@
       {"rule_set": ["geosite-chat", "geosite-youtube", "geosite-github", "geosite-google", "geosite-telegram", "geosite-tiktok", "geosite-netflix", "geosite-onedrive", "geosite-microsoft", "geosite-geolocation-!cn"], "query_type": ["HTTPS", "SVCB"], "action": "predefined", "rcode": "NOERROR"},
       {"rule_set": ["geosite-chat", "geosite-youtube", "geosite-github", "geosite-google", "geosite-telegram", "geosite-tiktok", "geosite-netflix", "geosite-onedrive", "geosite-microsoft", "geosite-geolocation-!cn"], "action": "route", "server": "dns_proxy"},
       {"rule_set": ["geosite-cn"], "action": "route", "server": "dns_direct"},
+      {"query_type": ["A", "AAAA"], "action": "evaluate", "server": "dns_direct", "disable_optimistic_cache": true},
+      {"query_type": ["A", "AAAA"], "match_response": true, "ip_cidr": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10", "fc00::/7", "fe80::/10", "::1/128"], "action": "respond"},
+      {"query_type": ["A", "AAAA"], "match_response": true, "rule_set": ["geoip-cn"], "action": "respond"},
       {"query_type": ["A", "AAAA"], "rewrite_ttl": 60, "action": "route", "server": "fakeip"},
       {"query_type": ["HTTPS", "SVCB"], "action": "predefined", "rcode": "NOERROR"}
     ],
@@ -138,7 +141,9 @@
       {"rule_set": ["geosite-microsoft"], "action": "route", "outbound": "🪟 Microsoft"},
       {"rule_set": ["geosite-geolocation-!cn"], "action": "route", "outbound": "🚀 节点选择"},
       {"rule_set": ["geosite-cn"], "action": "route", "outbound": "🎯 全球直连"},
-      {"inbound": "mixed-in", "action": "resolve"},
+      {"rule_set": ["geoip-cn"], "action": "route", "outbound": "🎯 全球直连"},
+      {"inbound": ["tun-in", "mixed-in"], "action": "resolve", "server": "dns_direct", "strategy": "prefer_ipv4", "disable_optimistic_cache": true},
+      {"ip_cidr": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10", "fc00::/7", "fe80::/10", "::1/128"], "action": "route", "outbound": "🎯 全球直连"},
       {"rule_set": ["geoip-cn"], "action": "route", "outbound": "🎯 全球直连"}
     ],
     "rule_set": [
