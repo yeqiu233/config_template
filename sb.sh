@@ -2,9 +2,10 @@
 # Debian / Ubuntu + systemd. Install as /usr/local/bin/sb.
 set -u -o pipefail
 umask 077
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 DIR=/etc/sing-box
 CFG=$DIR/config.json
+BACKUP=$DIR/config.json.bak
 WORK=$DIR
 STATE=$DIR
 UI=$DIR/ui
@@ -36,7 +37,7 @@ atomic_file(){ local src=$1 dst=$2 t; t=$(mktemp "$(dirname "$dst")/.sb-write.XX
 require_box(){ need sing-box || return 1; }
 # Root files in a sticky directory cannot be removed/renamed by sing-box.
 # Never use recursive chown on the entire directory.
-protected(){ [[ $1 == sb || $1 == sb-* || $1 == sb.conf || $1 == sb.lock || $1 == manager || $1 == data || $1 == ui || $1 == config.url || $1 == .sb-* || $1 == install.log || $1 == config-*.bak ]]; }
+protected(){ [[ $1 == sb || $1 == sb-* || $1 == sb.conf || $1 == sb.lock || $1 == manager || $1 == data || $1 == ui || $1 == config.url || $1 == .sb-* || $1 == install.log || $1 == config-*.bak || $1 == config.json.bak ]]; }
 permissions(){
     getent passwd sing-box >/dev/null && getent group sing-box >/dev/null || { err '不存在 sing-box 用户或组，请先安装官方软件包。'; return 1; }
     chown root:sing-box "$DIR" && chmod 1770 "$DIR" || return 1
@@ -78,7 +79,90 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_PTRAC
 EOF
     mv -fT "$drop.tmp" "$drop" && systemctl daemon-reload
 }
+# A persistent systemd start interlock, removed only by a validated manual import.
+# It is a unit drop-in, not a new state file in /etc/sing-box.
+HOLD=/etc/systemd/system/sing-box.service.d/91-sb-start-hold.conf
+GUARD=sb-manager-network-guard
+hold_service(){
+    local t
+    mkdir -p -- "${HOLD%/*}" || return 1
+    t=$(mktemp "${HOLD%/*}/.hold.XXXXXX") || return 1
+    if ! printf '[Unit]\nConditionPathExists=!%s\n' "$HOLD" > "$t" || ! mv -fT -- "$t" "$HOLD"; then rm -f -- "$t"; return 1; fi
+    systemctl daemon-reload
+}
+safety_stop(){
+    local rc=0
+    hold_service || rc=1
+    # Stop even if writing the interlock failed; never restart on failure.
+    systemctl stop sing-box.service || rc=1
+    systemctl disable sing-box.service >/dev/null 2>&1 || rc=1
+    if systemctl is-active --quiet sing-box.service; then err '安全停机失败，请从本地控制台检查'; return 1; fi
+    return "$rc"
+}
+network_probe(){
+    local label=$1 url code; shift
+    for url in "$@"; do
+        code=$(curl -q -sS --noproxy '*' --connect-timeout 3 --max-time 7 --retry 0 --proto '=https' -o /dev/null -w '%{http_code}' "$url" 2>/dev/null) || continue
+        case $code in 200|204) ok "$label：正常"; return 0;; esac
+    done
+    warn "$label：无法访问"; return 1
+}
+guard_pending(){
+    local u state
+    for u in "$GUARD.timer" "$GUARD.service"; do
+        state=$(systemctl show "$u" -p ActiveState --value 2>/dev/null) || state=''
+        case $state in active|activating|deactivating|reloading) return 0;; esac
+    done
+    return 1
+}
+guarded_start(){
+    local allow=${1:-normal} cn=0 foreign=0
+    if [[ -e $HOLD && $allow != imported ]]; then err '内核处于安全停机状态，请先使用菜单 02 导入并校验配置'; return 1; fi
+    need curl systemd-run timeout || return 1
+    if guard_pending; then err '上一次网络保护任务尚未结束，请稍后重试'; return 1; fi
+    # Independent of the SSH session. If the manager dies before confirming
+    # connectivity, this transient timer puts the core back into safe hold.
+    if ! systemd-run --quiet --collect --unit="$GUARD" --on-active=120s --timer-property=AccuracySec=1s /bin/bash "$SELF" --network-guard-stop; then
+        err '无法建立独立网络保护，取消启动'; return 1
+    fi
+    if [[ -e $HOLD ]]; then
+        if ! rm -f -- "$HOLD" || ! systemctl daemon-reload; then
+            safety_stop; systemctl stop "$GUARD.timer" 2>/dev/null || true; return 1
+        fi
+    fi
+    info '正在启动内核，已启用 120 秒失联保护……'
+    if timeout 45s systemctl restart sing-box.service; then
+        sleep 3
+        if systemctl is-active --quiet sing-box.service; then
+            info '正在检查国内、国外网络……'
+            network_probe '国内网络' 'https://www.baidu.com/' 'https://connect.rom.miui.com/generate_204' && cn=1
+            network_probe '国外网络' 'https://www.gstatic.com/generate_204' 'https://www.cloudflare.com/cdn-cgi/trace' && foreign=1
+            if ((cn || foreign)) && systemctl is-active --quiet sing-box.service; then
+                # Cancel only after connectivity is confirmed. If the guard has
+                # already fired, keep the service stopped instead of racing it.
+                if systemctl stop "$GUARD.timer" && ! guard_pending && [[ ! -e $HOLD ]] && systemctl is-active --quiet sing-box.service; then
+                    if ((cn && foreign)); then ok '国内、国外网络检测均通过'; else warn '仅一类网络检测通过，按设置保留内核运行'; fi
+                    return 0
+                fi
+                warn '失联保护已触发或无法解除'
+            else warn '两类网络均未通过，或服务已退出'; fi
+        else warn '内核未进入运行状态'; fi
+    else warn '内核启动失败或超时'; fi
+    # Keep the independent guard armed until the immediate stop is confirmed.
+    if safety_stop; then
+        systemctl stop "$GUARD.timer" 2>/dev/null || true
+        err '已停止内核并关闭开机自启，请修正配置后通过菜单 02 重新导入'
+    else
+        err '安全停机未确认，独立保护任务仍保留，请检查本地控制台'
+    fi
+    return 1
+}
 restart_box_inner(){
+    local allow=${1:-normal}
+    [[ -s $CFG ]] || { err '尚未导入配置，请先使用菜单 02'; return 1; }
+    if [[ -e $HOLD && $allow != imported ]]; then err '内核处于安全停机状态，请先使用菜单 02 导入配置'; return 1; fi
+    if guard_pending; then err '上一次网络保护任务尚未结束，请稍后重试'; return 1; fi
+    if [[ $allow != imported ]]; then check_layout && check_cfg "$CFG" || return 1; fi
     # 根据 systemd 当前工作目录判断是否需要迁移，不另建标记文件。
     local old f name previous
     previous=$(systemctl show sing-box --property=WorkingDirectory --value) || return 1
@@ -95,7 +179,7 @@ restart_box_inner(){
         done
     fi
     migrate_ui || return 1
-    permissions && setup_service && systemctl restart sing-box && sleep 2 && systemctl is-active --quiet sing-box
+    permissions && setup_service && guarded_start "$allow"
 }
 # 仅转换官方已有的面板路径字段；所有面板使用 ui/名称，保留原下载地址等选项。
 normalize_ui(){
@@ -108,7 +192,7 @@ normalize_ui(){
           elif startswith($legacy+"/") then ltrimstr($legacy+"/")
           elif startswith("./") then ltrimstr("./") else . end)
         | ltrimstr("ui/") | ltrimstr("data/")
-        | if test("^[A-Za-z0-9][A-Za-z0-9._-]*$") and (startswith("sb-")|not) and . != "sb" and . != "sb.conf" and . != "sb.lock" and . != "install.log" and (test("^config-.*\\.bak$")|not) and . != "cache.db" and . != "config.json" and . != "config.url" and . != "manager" and . != "data" and . != "ui" then $dir+"/ui/"+. else error("不支持的面板目录："+$p) end;
+        | if test("^[A-Za-z0-9][A-Za-z0-9._-]*$") and (startswith("sb-")|not) and . != "sb" and . != "sb.conf" and . != "sb.lock" and . != "install.log" and (test("^config-.*\\.bak$")|not) and . != "cache.db" and . != "config.json" and . != "config.json.bak" and . != "config.url" and . != "manager" and . != "data" and . != "ui" then $dir+"/ui/"+. else error("不支持的面板目录："+$p) end;
       if (.experimental.clash_api.external_ui // "") != "" then .experimental.clash_api.external_ui |= panelpath("zashboard") else . end
       | if (.services|type)=="array" then .services |= map(if .type=="api" then
           if .dashboard==true then .dashboard={enabled:true,path:("dashboard"|panelpath("dashboard"))}
@@ -145,7 +229,7 @@ migrate_ui(){
 }
 restart_box(){
     local t backup
-    if [[ ! -s $CFG ]]; then restart_box_inner; return $?; fi
+    [[ -s $CFG && ! -e $HOLD ]] || { err '尚未导入有效配置，或处于安全停机状态，请先使用菜单 02'; return 1; }
     need jq sing-box || return 1
     check_layout || return 1
     t=$(mktemp) || return 1
@@ -154,13 +238,13 @@ restart_box(){
         rm -f -- "$t"; restart_box_inner; return $?
     fi
     if ! check_cfg "$t"; then rm -f -- "$t"; err '面板路径调整校验失败，原配置未修改'; return 1; fi
-    backup=$(mktemp "$STATE/config-ui-$(date +%Y%m%d-%H%M%S).XXXXXX.bak") || { rm -f -- "$t"; return 1; }
-    if ! cp -- "$CFG" "$backup" || ! atomic_file "$t" "$CFG"; then rm -f -- "$t"; return 1; fi
+    backup=$BACKUP
+    if ! atomic_file "$CFG" "$backup" || ! atomic_file "$t" "$CFG"; then rm -f -- "$t"; return 1; fi
     rm -f -- "$t"
     if restart_box_inner; then ok '面板路径已统一到 ui/'; return 0; fi
     warn '迁移后启动失败，恢复旧配置……'
     # 恢复原配置及原面板路径，不重新触发迁移。
-    if atomic_file "$backup" "$CFG" && permissions && setup_service && systemctl restart sing-box; then warn '已尝试使用旧配置恢复服务'; fi
+    if safety_stop && atomic_file "$backup" "$CFG" && permissions; then warn '已恢复旧配置，内核保持停止'; fi
     return 1
 }
 check_cfg(){ (cd "$WORK" && timeout 60s sing-box check -c "$1" -D "$WORK"); }
@@ -204,58 +288,110 @@ install_box(){
     esac
     [[ $target =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)(\.[0-9]+)?)?$ ]] || { err '版本无效或未获取，请使用手动指定版本'; return 1; }
     [[ $cur != "$target" ]] || { ok '已经是所选版本'; return 0; }
-    warn '实际安装可能重启服务并中断通过此旁路由或内置 Tailscale 的 SSH 连接。'
+    warn '仅安装内核：下载成功后停止现有服务，安装后保持停止并关闭自启。若通过此内核的 Tailscale 连接，请先切换到本地控制台。'
     ask "确认通过 $base 安装 sing-box $target？" || return 0
     locked install_selected "$target" "$base"
 }
 install_selected(){
-    local target=$1 base=$2 log tmp status download_url
-    if [[ -s $CFG ]]; then check_layout || return 1; local save; save=$(mktemp "$STATE/config-before-install-$(date +%Y%m%d-%H%M%S).XXXXXX.bak") && cp -- "$CFG" "$save" || return 1; fi
-    if getent passwd sing-box >/dev/null; then permissions || return 1; fi
-    tmp=$(mktemp -d) || return 1; log=$STATE/install.log
-    atomic_text "$log" '' || return 1
-    info '正在安装，详细输出已保存到安装日志……'
-    # 官方脚本没有查询模式；指定刚才确认的精确版本。
-    # 修正其 dpkg 失败后 rm 可能掩盖退出码的问题。
-    download_url="${base}https://raw.githubusercontent.com/SagerNet/sing-box/stable/docs/installation/tools/install.sh"
-    (cd "$tmp" && fetch "$download_url" -o install.original &&
-        sed -e "s#https://github.com/#${base}https://github.com/#g" \
-            -e 's/\bcurl /curl -q -4 --connect-timeout 8 --max-time 180 --retry 0 /g' \
-            -e '/sh -c "\$package_install/ s/$/ || exit $?/' install.original > install.sh &&
-        sh -n install.sh && env -u GITHUB_TOKEN sh install.sh --version "$target") > "$log" 2>&1
-    status=$?; rm -rf -- "$tmp"
-    if ((status != 0)) || [[ $(version) != "$target" ]] || ! dpkg-query -W -f='${Status}\n' sing-box 2>/dev/null | grep -qx 'install ok installed'; then
-        tail -n 15 "$log"; warn '如提示缺少依赖，请先安装对应依赖（可用 apt --fix-broken install 修复未完成的软件包安装）'; err "安装未确认成功，日志：$log"; return 1
+    local target=$1 base=$2 log tmp status=0 arch package url had=0 save='' state
+    need dpkg dpkg-deb dpkg-query curl systemctl || return 1
+    check_layout || return 1
+    if guard_pending; then err '上一次网络保护任务尚未结束，请稍后重试'; return 1; fi
+    if [[ -e $CFG ]]; then
+        [[ -f $CFG && ! -L $CFG ]] || { err 'config.json 不是普通文件'; return 1; }
+        had=1
     fi
-    permissions || return 1
-    ok "安装完成：$(version)"
-    if [[ -s $CFG ]]; then
-        check_layout && check_cfg "$CFG" && restart_box && ok '服务已重启' || { warn '配置或服务未通过检查，请用菜单 2 / 8 排查。'; return 1; }
-    else info '请先使用菜单 2 更新配置'; fi
+    arch=$(dpkg --print-architecture) || return 1
+    [[ $arch =~ ^[a-z0-9]+$ ]] || return 1
+    tmp=$(mktemp -d) || return 1; log=$STATE/install.log
+    package="$tmp/sing-box.deb"
+    url="${base}https://github.com/SagerNet/sing-box/releases/download/v${target}/sing-box_${target}_linux_${arch}.deb"
+    atomic_text "$log" '' || { rm -rf -- "$tmp"; return 1; }
+    info '正在下载官方内核安装包（此时不停止现有服务）……'
+    if ! curl -q -4 -fSL --connect-timeout 8 --max-time 180 --retry 0 --proto '=https' --proto-redir '=https' "$url" -o "$package" > "$log" 2>&1 ||
+       [[ $(dpkg-deb -f "$package" Package 2>>"$log") != sing-box || $(dpkg-deb -f "$package" Architecture 2>>"$log") != "$arch" ]]; then
+        tail -n 10 "$log"; rm -rf -- "$tmp"; err '下载失败或软件包不匹配，未停止服务'; return 1
+    fi
+    if ((had)); then
+        save="$tmp/config.previous"
+        if ! cp -- "$CFG" "$save"; then rm -rf -- "$tmp"; err '无法暂存原配置，取消安装'; return 1; fi
+    fi
+    # Set the persistent interlock BEFORE dpkg, not after package hooks run.
+    if ! hold_service; then rm -rf -- "$tmp"; err '无法禁止自动启动，取消安装'; return 1; fi
+    state=$(systemctl show sing-box.service -p LoadState --value 2>/dev/null) || state=''
+    if [[ $state != not-found ]]; then
+        if ! systemctl stop sing-box.service; then rm -rf -- "$tmp"; err '无法确认内核已停止，取消安装'; return 1; fi
+    fi
+    systemctl disable sing-box.service >/dev/null 2>&1 || true
+    info '正在安装内核，禁止软件包自动启动服务……'
+    DEBIAN_FRONTEND=noninteractive dpkg --force-confdef --force-confold -i "$package" >> "$log" 2>&1 || status=$?
+    # Debian packages may ship a sample config. Never import it on behalf of the user.
+    local keep_tmp=0
+    if ((had)); then
+        if ! cmp -s -- "$save" "$CFG" && ! atomic_file "$save" "$CFG"; then
+            status=1; keep_tmp=1; warn "原配置恢复失败，临时副本保留于：$save"
+        fi
+    elif [[ -e $CFG || -L $CFG ]]; then
+        rm -f -- "$CFG" || status=1
+    fi
+    ((keep_tmp)) || rm -rf -- "$tmp"
+    systemctl daemon-reload || status=1
+    safety_stop || status=1
+    if ((status != 0)) || [[ $(version) != "$target" ]] || ! dpkg-query -W -f='${Status}\n' sing-box 2>/dev/null | grep -qx 'install ok installed'; then
+        tail -n 15 "$log"; err "安装未确认成功，内核保持安全停机。请检查依赖及日志：$log"; return 1
+    fi
+    ok "内核安装完成：$(version)"
+    info '未启动内核，未开启自启。请使用菜单 02 下载并导入有效配置。'
 }
 update_config(){
-    local mode=${1:-manual} u tmp normalized backup='' had=0
-    need curl jq sing-box || return 1; check_layout || return 1
+    local mode=${1:-manual} u tmp normalized backup='' had=0 washeld=0
+    need curl jq sing-box systemd-run || return 1; check_layout || return 1
+    if [[ -e $HOLD && $mode != manual ]]; then warn '内核处于安全停机状态，仅允许通过菜单 02 手动导入'; return 1; fi
+    if guard_pending; then err '上一次网络保护任务尚未结束，请稍后重试'; return 1; fi
     u=$(settings_get '.sub_url // empty') || return 1
     if [[ -z $u ]]; then [[ $mode == manual ]] && set_sub || { err '尚未设置 Sub-Store 链接'; return 1; }; u=$(settings_get '.sub_url // empty') || return 1; fi
     url_ok "$u" || { err '配置链接无效'; return 1; }
     tmp=$(mktemp) || return 1
-    info '正在下载并验证配置……' 
+    info '正在下载并验证配置……'
     normalized=$(mktemp) || { rm -f -- "$tmp"; return 1; }
-    if ! fetch "$u" -o "$tmp" || ! jq -e 'type=="object"' "$tmp" >/dev/null || ! normalize_ui "$tmp" > "$normalized" || ! check_cfg "$normalized"; then rm -f -- "$tmp" "$normalized"; err '下载或校验失败，旧配置未修改。'; return 1; fi
+    if ! fetch "$u" -o "$tmp" || ! jq -e 'type=="object"' "$tmp" >/dev/null || ! normalize_ui "$tmp" > "$normalized" || ! check_cfg "$normalized"; then rm -f -- "$tmp" "$normalized"; err '下载或校验失败，旧配置及服务未修改。'; return 1; fi
     rm -f -- "$tmp"; tmp=$normalized
-    if [[ -f $CFG ]] && timeout 2s systemctl is-active --quiet sing-box 2>/dev/null && jq -e --slurpfile new "$tmp" '. == $new[0]' "$CFG" >/dev/null 2>&1; then
-        rm -f -- "$tmp"; ok '配置未变化，无需重启'; return 0
+    if [[ -f $CFG ]] && jq -e --slurpfile new "$tmp" '. == $new[0]' "$CFG" >/dev/null 2>&1; then
+        rm -f -- "$tmp"
+        if [[ ! -e $HOLD ]] && timeout 2s systemctl is-active --quiet sing-box 2>/dev/null; then
+            ok '配置未变化，无需备份或重启'; return 0
+        fi
+        info '配置未变化，保留已有备份，尝试安全启动内核……'
+        if restart_box_inner imported; then ok '服务运行中'; return 0; fi
+        safety_stop || warn '安全停机未确认，请检查本地控制台'
+        return 1
     fi
-    if [[ -e $CFG ]]; then had=1; backup=$(mktemp "$STATE/config-$(date +%Y%m%d-%H%M%S).XXXXXX.bak") || { rm -f "$tmp"; return 1; }; cp -- "$CFG" "$backup" || { rm -f "$tmp"; return 1; }; fi
-    if ! atomic_file "$tmp" "$CFG"; then rm -f "$tmp"; return 1; fi
+    if [[ -e $CFG ]]; then
+        [[ -f $CFG && ! -L $CFG ]] || { rm -f -- "$tmp"; err 'config.json 不是普通文件'; return 1; }
+        had=1; backup=$BACKUP
+        if ! atomic_file "$CFG" "$backup"; then rm -f -- "$tmp"; err '备份失败，旧配置未修改'; return 1; fi
+    fi
+    # Protect against a disconnect or reboot between replacing the config and arming the watchdog.
+    [[ ! -e $HOLD ]] || washeld=1
+    if ! hold_service; then rm -f -- "$tmp"; err '无法建立启动保护，旧配置未修改'; return 1; fi
+    if ! atomic_file "$tmp" "$CFG"; then
+        rm -f -- "$tmp"
+        if (( ! washeld )); then rm -f -- "$HOLD" && systemctl daemon-reload || warn '启动保护未解除，请通过菜单 02 重试'; fi
+        return 1
+    fi
     rm -f -- "$tmp"
-    if restart_box; then ok '配置更新完成，服务运行中'; return 0; fi
-    warn '启动失败，正在恢复旧配置……'
+    ok '配置校验通过，已导入配置'
+    if restart_box_inner imported; then ok '配置更新完成，服务运行中'; return 0; fi
+    warn '启动或网络检测失败，正在停止内核并恢复旧配置（不自动重启）……'
+    if ! safety_stop; then err '安全停机未确认，暂不修改磁盘配置，请从本地控制台检查'; return 1; fi
     if ((had)); then
-        atomic_file "$backup" "$CFG" && permissions && setup_service && systemctl restart sing-box && sleep 2 && systemctl is-active --quiet sing-box && { err '新配置启动失败，已恢复旧配置并重启。'; return 1; }
-    else systemctl stop sing-box; rm -f -- "$CFG"; fi
-    err '服务未能恢复运行，请查看日志。备份保存在 /etc/sing-box。'
+        if ! atomic_file "$backup" "$CFG" || ! permissions; then err "旧配置恢复失败，备份：$backup"; return 1; fi
+        warn '旧配置已恢复，内核保持停止'
+    else
+        rm -f -- "$CFG" || return 1
+        warn '首次导入未通过运行检测，已撤销新配置，内核保持停止'
+    fi
+    return 1
 }
 # systemd 定时器：本地时间，每日一次，关机错过的任务在开机后补跑。
 timer_set(){
@@ -535,7 +671,7 @@ show_defaults(){
     done < <(panels)
 }
 defaults(){ local a u kind name rawpath source idx path key; printf '1. 设置 Sub-Store 链接\n2. 设置面板下载链接\n3. 恢复面板下载链接\n4. 查看当前设置信息\n0. 返回\n'; read -r -p '请选择: ' a; case $a in 1) set_sub;; 2) choose_panel || return 1; read -r -p '面板下载链接（回车取消）: ' u; [[ -n $u ]] || return 0; url_ok "$u" || { err '链接无效'; return 1; }; settings_write --arg k "${path##*/}" --arg u "$u" '.panel_urls[$k]=$u' && ok '面板下载链接已保存（用于脚本手动/定时更新）'; [[ $kind != official ]] || info '官方原生自动更新仍使用 config.json 内的 download_url';; 3) choose_panel || return 1; settings_write --arg k "${path##*/}" 'del(.panel_urls[$k])' && ok '已恢复配置中的链接';; 4) show_defaults;; esac; }
-autostart(){ local a; printf '当前状态: %s\n1. 开启开机自启\n2. 关闭开机自启\n0. 返回\n' "$(systemctl is-enabled sing-box 2>/dev/null || true)"; read -r -p '请选择: ' a; case $a in 1) systemctl enable sing-box && ok '已开启开机自启';; 2) systemctl disable sing-box && ok '已关闭开机自启';; esac; }
+autostart(){ local a; printf '当前状态: %s\n1. 开启开机自启\n2. 关闭开机自启\n0. 返回\n' "$(systemctl is-enabled sing-box 2>/dev/null || true)"; read -r -p '请选择: ' a; case $a in 1) if [[ -e $HOLD || ! -s $CFG ]]; then err '请先使用菜单 02 导入有效配置并通过运行检测'; return 1; fi; systemctl enable sing-box && ok '已开启开机自启' ;; 2) systemctl disable sing-box && ok '已关闭开机自启';; esac; }
 logs(){ local a; printf '1. 查看最近 100 行\n2. 实时日志（Ctrl+C 返回）\n0. 返回\n'; read -r -p '请选择: ' a; case $a in 1) journalctl -u sing-box -n 100 --no-pager -o cat;; 2) journalctl -u sing-box -n 50 -f -o cat;; esac; }
 init_lock(){
 # /run/lock 可能是共享 sticky 目录；拒绝预置的符号链接、硬链接或非 root 文件。
@@ -605,7 +741,7 @@ if [[ $(stat -c '%u:%a' "$DIR") != 0:1770 ]]; then
     chown root:root "$DIR" && chmod 1700 "$DIR" || return 1
 fi
 # Refuse existing unsafe management files rather than following links or trusting their contents.
-for f in "$DIR"/sb "$DIR"/sb.conf "$DIR"/sb.lock "$DIR"/sb-* "$DIR"/install.log "$DIR"/config-*.bak; do
+for f in "$DIR"/sb "$DIR"/sb.conf "$DIR"/sb.lock "$DIR"/sb-* "$DIR"/install.log "$DIR"/config-*.bak "$BACKUP"; do
     [[ -e $f || -L $f ]] || continue
     [[ ! -L $f && -f $f && $(stat -c '%u' -- "$f") == 0 && $(stat -c '%h' -- "$f") == 1 ]] || { err "管理文件不安全：$f"; return 1; }
     if [[ $f == "$DIR/sb" ]]; then chmod 700 "$f" || return 1; else chmod 600 "$f" || return 1; fi
@@ -621,45 +757,129 @@ if [[ ! -e $SETTINGS ]]; then
 fi
 if getent group sing-box >/dev/null; then chown root:sing-box "$DIR" && chmod 1770 "$DIR" || return 1; else chmod 1755 "$DIR" || return 1; fi
 }
-# Install/update the manager itself from a downloaded file or Git checkout.
-# Does not initialize sing-box, modify config.json or restart services.
+# Install/update the manager itself. The core, configuration and timers are untouched.
+# Download this script to a file before invoking --install.
+install_dependencies(){
+    local -a packages=()
+    command -v curl >/dev/null || packages+=(curl)
+    command -v jq >/dev/null || packages+=(jq)
+    command -v python3 >/dev/null || packages+=(python3)
+    command -v flock >/dev/null || packages+=(util-linux)
+    command -v ip >/dev/null && command -v ss >/dev/null || packages+=(iproute2)
+    command -v sysctl >/dev/null || packages+=(procps)
+    [[ -s /etc/ssl/certs/ca-certificates.crt ]] || packages+=(ca-certificates)
+    ((${#packages[@]})) || return 0
+    need apt-get || return 1
+    info "安装管理工具缺少的依赖：${packages[*]}"
+    apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update &&
+        DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends "${packages[@]}" || { err '依赖安装失败，请检查 APT 网络或软件源后重新运行安装命令'; return 1; }
+}
+# Only root-owned, non-linked, non-group/world-writable startup files are edited.
+trusted_file(){
+    local f=$1 mode
+    [[ -f $f && ! -L $f && $(stat -c '%u:%h' -- "$f") == 0:1 ]] || return 1
+    mode=$(stat -c '%a' -- "$f") || return 1
+    (( (8#$mode & 022) == 0 ))
+}
+trusted_dir(){
+    local d=$1 mode
+    [[ -d $d && ! -L $d && $(stat -c '%u' -- "$d") == 0 ]] || return 1
+    mode=$(stat -c '%a' -- "$d") || return 1
+    (( (8#$mode & 022) == 0 ))
+}
+add_shell_hook(){
+    local f=$1 line='[ ! -r /etc/profile.d/sb.sh ] || . /etc/profile.d/sb.sh'
+    if [[ -e $f || -L $f ]]; then
+        trusted_file "$f" || { err "启动文件不安全，未修改：$f"; return 1; }
+        grep -Fxq -- "$line" "$f" && return 0
+    fi
+    printf '\n# sing-box manager shortcut\n%s\n' "$line" >> "$f"
+}
+install_shortcut(){
+    local profile=/etc/profile.d/sb.sh login=/root/.profile tmp
+    trusted_dir /etc/profile.d && trusted_dir /root || { err '登录配置目录权限不安全'; return 1; }
+    if [[ -e $profile || -L $profile ]]; then
+        trusted_file "$profile" || { err "快捷入口文件不安全：$profile"; return 1; }
+        # Do not overwrite an unrelated administrator's script.
+        if ! grep -Fxq '# sing-box manager shortcut' "$profile" &&
+           ! grep -Fxq "alias sb='/usr/local/bin/sb'" "$profile" &&
+           ! grep -Fxq "alias sb='/bin/bash /usr/local/bin/sb'" "$profile"; then
+            err "发现非本工具的快捷入口：$profile，请检查后再安装"; return 1
+        fi
+    fi
+    tmp=$(mktemp /etc/profile.d/.sb-profile.XXXXXXXX) || return 1
+    cat > "$tmp" <<'PROFILE'
+# sing-box manager shortcut
+# Loaded by root's Bash login and interactive startup files.
+if [ "$(id -u)" = 0 ]; then
+    case "$PATH" in
+        /usr/local/bin|/usr/local/bin:*) ;;
+        *) export PATH="/usr/local/bin:$PATH" ;;
+    esac
+    if [ -n "${BASH_VERSION:-}" ]; then
+        alias sb='/usr/local/bin/sb'
+        hash -r 2>/dev/null || :
+    fi
+fi
+PROFILE
+    if ! chmod 644 "$tmp" || ! mv -fT -- "$tmp" "$profile"; then rm -f -- "$tmp"; return 1; fi
+    # Bash reads only the first existing login file in this order.
+    if [[ -e /root/.bash_profile || -L /root/.bash_profile ]]; then login=/root/.bash_profile
+    elif [[ -e /root/.bash_login || -L /root/.bash_login ]]; then login=/root/.bash_login; fi
+    add_shell_hook /root/.bashrc && add_shell_hook "$login" || return 1
+    # Verify the managed shortcut in an isolated Bash (no user startup code).
+    /bin/bash --noprofile --norc -c '. /etc/profile.d/sb.sh; [[ $(type -P sb) == /usr/local/bin/sb && ${BASH_ALIASES[sb]:-} == /usr/local/bin/sb ]]' || { err '快捷入口验证失败'; return 1; }
+}
+menu_check(){
+    local out
+    out=$(printf '00\n' | timeout 15s "$1" 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+    [[ $out == *'sing-box 管理工具'* && $out == *'安装升级'* && $out == *'更新面板'* ]]
+}
 install_manager(){
-    need flock realpath timeout || return 1
-    local src
-    src=$(realpath -e -- "${BASH_SOURCE[0]}") || { err '请先将脚本下载到文件，再执行 bash sb.sh --install'; return 1; }
+    need realpath timeout install stat || return 1
+    local src origin=${BASH_SOURCE[0]:-}
+    [[ -n $origin && -f $origin ]] || { err '请先使用 curl -o 下载 sb.sh，再执行 bash sb.sh --install（不能直接使用 curl | bash 安装本文件）'; return 1; }
+    src=$(realpath -e -- "$origin" 2>/dev/null) || { err '无法找到安装源文件，请先下载 sb.sh'; return 1; }
     [[ -f $src ]] || { err '安装源必须是普通文件'; return 1; }
-    if [[ $src == "$SELF" ]]; then ok "管理工具已安装：$SELF"; return 0; fi
+    [[ -d /run/systemd/system ]] || { err '需要正在运行 systemd 的 Debian / Ubuntu 系统'; return 1; }
+    install_dependencies || return 1
+    need curl jq python3 flock systemctl systemd-run ip sysctl || return 1
     init_lock || return 1
     (
         flock -n 9 || { err '有管理任务正在运行，请结束后再更新管理工具'; exit 1; }
-        local dir staged previous output
+        local dir staged='' previous='' had=0 changed=0
         dir=${SELF%/*}
         mkdir -p -- "$dir" || exit 1
-        [[ -d $dir && ! -L $dir && $(stat -c '%u' "$dir") == 0 ]] || { err '安装目录不安全'; exit 1; }
+        trusted_dir "$dir" || { err '安装目录权限不安全'; exit 1; }
+        trap 'rm -f -- "$staged" "$previous"' EXIT
         staged=$(mktemp "$dir/.sb-install.XXXXXXXX") || exit 1
-        previous=''
-        trap 'rm -f -- "$staged"; if [[ -n $previous ]]; then rm -f -- "$previous"; fi' EXIT
-        install -o root -g root -m 700 -- "$src" "$staged" || exit 1
+        install -o root -g root -m 755 -- "$src" "$staged" || exit 1
         bash -n "$staged" || { err '语法检查失败，旧脚本未修改'; exit 1; }
-        output=$(printf '0\n' | timeout 15s bash "$staged" 2>&1) || { printf '%s\n' "$output" >&2; err '菜单启动检查失败，旧脚本未修改'; exit 1; }
-        [[ $output == *'sing-box 管理工具'* && $output == *'安装升级'* && $output == *'更新面板'* ]] || { err '菜单检查失败，旧脚本未修改'; exit 1; }
+        menu_check "$staged" || { err '菜单启动检查失败，旧脚本未修改'; exit 1; }
         if [[ -e $SELF || -L $SELF ]]; then
             [[ -f $SELF && $(stat -Lc '%u' -- "$SELF") == 0 ]] && grep -Fq 'sing-box 管理工具' "$SELF" || { err "发现其他同名命令：$SELF，拒绝覆盖"; exit 1; }
-            if cmp -s -- "$staged" "$SELF" && [[ ! -L $SELF ]]; then
-                ok '管理工具已是此次下载的版本'; exit 0
+            had=1
+        fi
+        if ((had)) && cmp -s -- "$staged" "$SELF" && [[ ! -L $SELF ]]; then
+            chown root:root "$SELF" && chmod 755 "$SELF" || exit 1
+        else
+            if ((had)); then
+                previous=$(mktemp "$dir/.sb-backup.XXXXXXXX") || exit 1
+                install -o root -g root -m 700 -- "$SELF" "$previous" && mv -fT -- "$previous" "$dir/.sb.previous" || exit 1
             fi
-            previous=$(mktemp "$dir/.sb-backup.XXXXXXXX") || exit 1
-            install -o root -g root -m 700 -- "$SELF" "$previous" && mv -fT -- "$previous" "$dir/.sb.previous" || exit 1
+            mv -fT -- "$staged" "$SELF" || exit 1
+            changed=1
         fi
-        mv -fT -- "$staged" "$SELF" || exit 1
-        ok "管理工具已安装：$SELF"
+        # Execute the installed path directly, not via bash (tests shebang and executable permission).
+        if ! menu_check "$SELF"; then
+            if ((changed && had)); then
+                install -o root -g root -m 755 -- "$dir/.sb.previous" "$staged" && mv -fT -- "$staged" "$SELF" || warn "旧版恢复失败，备份：$dir/.sb.previous"
+            elif ((changed)); then rm -f -- "$SELF"; fi
+            err '安装后的菜单验证失败'; exit 1
+        fi
+        install_shortcut || { err "脚本已写入 $SELF，但快捷入口配置未完成，请按错误提示处理"; exit 1; }
+        ok "管理工具已安装并通过菜单测试：$SELF"
     ) 9<"$LOCK" || return 1
-    # Keep the established interactive root shortcut; do not alter other aliases.
-    if [[ ! -L /root/.bashrc && ( ! -e /root/.bashrc || ( -f /root/.bashrc && $(stat -c '%u:%h' /root/.bashrc) == 0:1 ) ) ]]; then
-        if ! grep -Fxq "alias sb='/usr/local/bin/sb'" /root/.bashrc 2>/dev/null; then
-            printf "\nalias sb='/usr/local/bin/sb'\n" >> /root/.bashrc || warn '无法保存 Bash 快捷命令，可直接执行 /usr/local/bin/sb'
-        fi
-    fi
-    printf '安装完成。输入 sb 即可进入菜单。\n不会重启 sing-box，也不会修改订阅、面板或定时任务。\n'
+    printf '\n当前 SSH 会话执行：. /etc/profile.d/sb.sh\n然后输入 sb。以后重新登录可直接输入 sb。\n不会安装或重启 sing-box 内核，不会修改订阅、面板或定时任务。\n'
 }
-case ${1:-} in '') main;; --install) install_manager;; --update-config) locked config_update_due;; --update-panel) [[ ${2:-} =~ ^[a-f0-9]{16}$ ]] || exit 1; locked update_panel_key "$2";; *) err '未知参数'; exit 1;; esac
+case ${1:-} in --network-guard-stop) warn '失联保护超时，停止内核'; safety_stop;; '') main;; --install) install_manager;; --update-config) locked config_update_due;; --update-panel) [[ ${2:-} =~ ^[a-f0-9]{16}$ ]] || exit 1; locked update_panel_key "$2";; *) err '未知参数'; exit 1;; esac
