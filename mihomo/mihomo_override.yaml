@@ -1,10 +1,12 @@
-# Mihomo 精细化分流覆写模板（基于 config_tun_dx.json）
-# 用途：与原订阅合并，保留 proxies / proxy-providers；替换本文件涉及的同名模块。
-# 不强制启用 TUN，不修改订阅、入站端口、控制面板及密码。
+# Mihomo 通用覆写模板
+# 将本文件作为合并覆写应用于原订阅；保留原 proxies / proxy-providers。
+# proxy-groups、rules、rule-providers 使用本模板完整替换，勿将 rules 追加到旧 MATCH 后。
+# 入站、DNS 监听端口、TUN、API、运行模式均由客户端管理。
 # 使用支持 fake-ip-filter-mode: rule、inline rule-provider 的新版 Mihomo。
-# 规则更新保留原配置使用的 gh-proxy.com 镜像；可按网络情况替换。
+# 客户端应保留本模板 DNS 和规则策略；不支持的客户端需另行适配。
+# 规则下载沿用原 gh-proxy.com 镜像；不可用时需要自行更换。
+# 订阅 URL 可能包含私人令牌，不要公开填写后的配置。
 
-mode: rule
 ipv6: false
 find-process-mode: strict
 profile:
@@ -13,7 +15,7 @@ profile:
 
 # ==================== DNS ====================
 # 国内 DNS 直连，国外已知服务 DNS 走默认代理，未知域名先国内解析供 IP 判定。
-# 不启用全局 respect-rules 或 fallback-filter，以避免 DNS 自引用和把国内地址误判为污染。
+# 不启用全局 respect-rules 或 fallback-filter，保留原模板的 DNS 出站策略。
 # DNS IP 字面量 + 显式出站，避免节点域名与代理 DNS 相互依赖。
 dns:
   enable: true
@@ -22,7 +24,6 @@ dns:
   use-hosts: true
   use-system-hosts: true
   respect-rules: false
-  listen: 0.0.0.0:1053
   ipv6: false
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/15
@@ -74,6 +75,7 @@ dns:
   direct-nameserver-follow-policy: true
   nameserver-policy:
     # 本地 DNS 必须能解析局域网域名；若系统 DNS 指回 Mihomo，改成真实 LAN DNS 地址。
+    # MagicDNS 需要系统已接入 Tailscale DNS 或配置可达的内网 DNS。
     'rule-set:local_domain,private_domain':
       - system
     'rule-set:tailscale_domain,dashboard_domain':
@@ -114,7 +116,7 @@ sniffer:
 
 # ==================== 策略组 ====================
 # DIRECT 是 Mihomo 内置直连，不依赖订阅中存在名为“直连”的节点。
-# include-all 同时兼容订阅的 proxies 与 proxy-providers。
+# include-all 自动加载原订阅中的 proxies 和 proxy-providers，无需指定机场名称。
 # 国内关键业务硬直连；普通国内流量保留可切换策略组。
 proxy-groups:
   - {name: '🚀 默认代理', type: 'select', proxies: ['♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点', 'DIRECT']}
@@ -132,13 +134,13 @@ proxy-groups:
   - {name: '🎯 直连', type: 'select', proxies: ['DIRECT', '🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
   - {name: '🌏 BT下载', type: 'select', proxies: ['DIRECT', '🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点']}
   - {name: '🐟 漏网之鱼', type: 'select', proxies: ['🚀 默认代理', '♻️ 自动选择', '🔯 故障转移', '🐸 手动切换', '🇸🇬 新加坡节点', '🇺🇸 美国节点', '🌐 全部节点', 'DIRECT']}
-  # 地区过滤仅用于实际订阅节点。未提供对应地区节点时，不要选空组。
-  - {name: '🇸🇬 新加坡节点', type: 'select', include-all: true, filter: '(?i)🇸🇬|新加坡|狮城|坡西|Singapore|Xinjiapo|(?:^|[^a-z])SG(?:[^a-z]|$)|坡[0-9]', exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass'}
-  - {name: '🇺🇸 美国节点', type: 'select', include-all: true, filter: '(?i)🇺🇸|美国|美國|洛杉矶|纽约|凤凰城|迈阿密|United\s*States|America|(?:^|[^a-z])USA?(?:[^a-z]|$)|美[0-9]|美西|美东', exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass'}
-  - {name: '🔯 故障转移', type: 'fallback', include-all: true, exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass', url: 'https://www.google.com/generate_204', interval: 300, lazy: true, expected-status: '204'}
-  - {name: '♻️ 自动选择', type: 'url-test', include-all: true, exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass', url: 'https://www.google.com/generate_204', interval: 300, lazy: true, expected-status: '204', tolerance: 50}
-  - {name: '🐸 手动切换', type: 'select', include-all: true, exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass'}
-  - {name: '🌐 全部节点', type: 'select', include-all: true, exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass'}
+  # 地区过滤仅用于实际订阅节点。空组使用 REJECT，避免无节点时意外直连。
+  - {name: '🇸🇬 新加坡节点', type: 'select', include-all: true, empty-fallback: REJECT, filter: '(?i)🇸🇬|新加坡|狮城|坡西|Singapore|Xinjiapo|(?:^|[^a-z])SG(?:[^a-z]|$)|坡[0-9]', exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass'}
+  - {name: '🇺🇸 美国节点', type: 'select', include-all: true, empty-fallback: REJECT, filter: '(?i)🇺🇸|美国|美國|洛杉矶|纽约|凤凰城|迈阿密|United\s*States|America|(?:^|[^a-z])USA?(?:[^a-z]|$)|美[0-9]|美西|美东', exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass'}
+  - {name: '🔯 故障转移', type: 'fallback', include-all: true, empty-fallback: REJECT, exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass', url: 'https://www.google.com/generate_204', interval: 300, lazy: true, expected-status: '204'}
+  - {name: '♻️ 自动选择', type: 'url-test', include-all: true, empty-fallback: REJECT, exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass', url: 'https://www.google.com/generate_204', interval: 300, lazy: true, expected-status: '204', tolerance: 50}
+  - {name: '🐸 手动切换', type: 'select', include-all: true, empty-fallback: REJECT, exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass'}
+  - {name: '🌐 全部节点', type: 'select', include-all: true, empty-fallback: REJECT, exclude-filter: '(?i)网站|网址|地址|剩余|流量重置|过期|到期|有效期|套餐|公告|官网|直连|direct|群组|客服|重置', exclude-type: 'Direct|Reject|Pass'}
 # ==================== 路由规则（自上而下） ====================
 # 注意：特定业务分组 > IP 专项 > 国内 IP > 宽泛国外域名 > 兜底。
 # 不在开头全局禁止 UDP/443，只对指定国外服务的 UDP/443 拦截。
@@ -189,6 +191,7 @@ rules:
   - 'RULE-SET,netflix_ip,🎥 NETFLIX,no-resolve'
   - 'RULE-SET,apple_ip,🍎 Apple,no-resolve'
   # 9. 国内真实 IP 优先于宽泛的国外域名集合。故意不加 no-resolve。
+  # 已提前命中的专项域名、GFW 域名不会再走到此规则；GeoIP 结果也取决于真实 DNS 和规则库。
   - 'RULE-SET,cn_ip,🎯 直连'
   - 'RULE-SET,geolocation-!cn,🚀 默认代理'
   - 'MATCH,🐟 漏网之鱼'
@@ -416,20 +419,3 @@ rule-providers:
       - '+.services.googleapis.cn'
       - '+.xn--ngstr-lra8j.com'
       - 'time.*.com'
-# ==================== Linux DX/LT 旁路由可选 TUN ====================
-# 默认不覆写 TUN，防止安装时或未接入订阅时自动接管网络。
-# 如果实际运行在 DX/LT Linux 容器，确认已有 TUN 权限和系统路由后再合并下列设置：
-# tun:
-#   enable: true
-#   stack: mixed
-#   auto-route: true
-#   auto-redirect: true
-#   auto-detect-interface: true
-#   strict-route: true
-#   dns-hijack: [any:53, 'tcp://any:53']
-#   route-exclude-address:
-#     - 192.168.0.0/16
-#     - 100.64.0.0/10
-#     - fd7a:115c:a1e0::/48
-# 不把 cn_ip 全量加入 route-exclude-address-set，否则会绕过各业务的精细分流。
-# 若系统/路由器 DNS 指回 1053，确保上游 local_domain 使用实际 LAN DNS 而不是自身。
