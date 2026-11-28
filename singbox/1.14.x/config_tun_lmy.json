@@ -15,6 +15,7 @@
     ],
     "rules": [
       {"action": "route-options", "remove_client_subnet": true},
+      {"domain": ["tailscale.com", "www.tailscale.com", "console.tailscale.com", "pkgs.tailscale.com", "status.tailscale.com"], "action": "route", "server": "dns_proxy"},
       {"domain_suffix": ["tailscale.com", "tailscale.io"], "action": "route", "server": "dns_direct", "disable_optimistic_cache": true},
       {"preferred_by": "dns_local", "disable_optimistic_cache": true, "action": "route", "server": "dns_local"},
       {"rule_set": ["geosite-private"], "disable_optimistic_cache": true, "action": "route", "server": "dns_local"},
@@ -127,6 +128,7 @@
       {"type": "logical", "mode": "and", "rules": [{"inbound": "tun-in", "clash_mode": "rule", "network": "tcp", "port": [80, 443]}, {"rule_set": ["geosite-cn"]}, {"rule_set": ["geoip-cn"]}, {"rule_set": ["geosite-chat", "geosite-youtube", "geosite-github", "geosite-google", "geoip-google", "geosite-telegram", "geoip-telegram", "geosite-tiktok", "geosite-netflix", "geoip-netflix", "geosite-apple", "geoip-apple", "geosite-onedrive", "geosite-microsoft", "geosite-geolocation-!cn"], "invert": true}, {"ip_cidr": ["198.18.0.0/15", "2001:2::/48"], "invert": true}], "action": "bypass"},
       {"action": "sniff"},
       {"protocol": "dns", "action": "hijack-dns"},
+      {"domain": ["tailscale.com", "www.tailscale.com", "console.tailscale.com", "pkgs.tailscale.com", "status.tailscale.com"], "action": "route", "outbound": "🚀 节点选择"},
       {"domain_suffix": ["tailscale.com", "tailscale.io"], "action": "route", "outbound": "🎯 全球直连"},
       {"rule_set": ["geosite-private"], "action": "route", "outbound": "🎯 全球直连"},
       {"ip_cidr": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "fc00::/7", "fe80::/10", "::1/128"], "action": "route", "outbound": "🎯 全球直连"},
