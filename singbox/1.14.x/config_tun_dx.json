@@ -1,5 +1,5 @@
 {
-  "$schema": "https://sing-box.sagernet.org/schema.json",
+  "$schema": "https://raw.githubusercontent.com/SagerNet/sing-box/v1.14.6/docs/schema.json",
   "log": {
     "disabled": false,
     "level": "info",
@@ -132,7 +132,7 @@
       {"clash_mode": "global", "action": "route", "outbound": "GLOBAL"},
       {"clash_mode": "rule", "rule_set": ["cn-app-wechat", "cn-app-payment", "geosite-bank-cn", "cn-app-shopping", "cn-app-media", "cn-app-life", "cn-app-office"], "action": "route", "outbound": "🎯 全球直连"},
       {"clash_mode": "rule", "protocol": "quic", "rule_set": ["geosite-youtube", "geosite-google", "geosite-chat", "geosite-tiktok", "geosite-netflix"], "action": "reject"},
-      {"protocol": "bt", "action": "route", "outbound": "🌏️ BT下载"},
+      {"protocol": "bittorrent", "action": "route", "outbound": "🌏️ BT下载"},
       {"domain": ["clash.razord.top", "yacd.metacubex.one", "yacd.haishan.me", "d.metacubex.one"], "action": "route", "outbound": "🎯 全球直连"},
       {"rule_set": ["geosite-chat"], "action": "route", "outbound": "🤖 OpenAI"},
       {"rule_set": ["geosite-youtube"], "action": "route", "outbound": "📹 YouTube"},
